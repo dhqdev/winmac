@@ -1,0 +1,14 @@
+# compilação
+build/
+dist/
+*.obj
+*.res
+*.pdb
+*.ilk
+# arquivos locais desta máquina (não publicar)
+backup/
+proto/
+legacy/
+assets/
+*.log
+config.ini

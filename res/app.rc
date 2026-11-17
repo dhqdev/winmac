@@ -1,0 +1,54 @@
+#include <winres.h>
+#include "../src/version.h"
+#include "../src/resids.h"
+
+1 24 "app.manifest"
+IDI_APP ICON "app.ico"
+
+IDR_FONT_INTER RCDATA "fonts/InterVariable.ttf"
+200 RCDATA "cursors/Pointer.cur"
+201 RCDATA "cursors/Help.cur"
+202 RCDATA "cursors/Work.ani"
+203 RCDATA "cursors/Busy.ani"
+204 RCDATA "cursors/Cross.cur"
+205 RCDATA "cursors/Text.cur"
+206 RCDATA "cursors/Handwriting.cur"
+207 RCDATA "cursors/Unavailiable.cur"
+208 RCDATA "cursors/Vert.cur"
+209 RCDATA "cursors/Horz.cur"
+210 RCDATA "cursors/Dng1.cur"
+211 RCDATA "cursors/Dng2.cur"
+212 RCDATA "cursors/Move.cur"
+213 RCDATA "cursors/Alternate.cur"
+214 RCDATA "cursors/Link.cur"
+215 RCDATA "cursors/Pin.cur"
+216 RCDATA "cursors/Person.cur"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION WINMAC_VERSION_RC
+ PRODUCTVERSION WINMAC_VERSION_RC
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041604b0"
+        BEGIN
+            VALUE "CompanyName", "dhqdev"
+            VALUE "FileDescription", "WinMac"
+            VALUE "FileVersion", WINMAC_VERSION_STR
+            VALUE "InternalName", "WinMac"
+            VALUE "LegalCopyright", "MIT - github.com/dhqdev/winmac"
+            VALUE "OriginalFilename", "WinMac.exe"
+            VALUE "ProductName", "WinMac"
+            VALUE "ProductVersion", WINMAC_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x416, 1200
+    END
+END
