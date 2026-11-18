@@ -106,11 +106,12 @@ Gera `build\WinMac.exe` e `dist\WinMac-Setup.exe`. Outros comandos úteis:
 | `WinMac.exe --export-art <pasta>` | exporta o Pingo, os ícones e os papéis de parede em PNG/JPG |
 | `WinMac.exe --shots <pasta>` | gera as prévias das telas usadas neste README |
 
-### Publicar uma atualização
+### Publicar uma atualização (automático)
 
-1. Aumente a versão em `src/version.h`.
-2. Rode `tools\release.cmd` (compila, cria a tag e publica `WinMac-Setup.exe` nas Releases).
-3. Quem já tem o WinMac recebe o aviso e atualiza em **Ajustes › Atualização de Software**.
+1. Aumente a versão em `src/version.h` (ex.: `1.1.0` → `1.2.0`).
+2. Envie para a `main` (`git push`).
+
+O GitHub Actions compila, cria a tag `v1.2.0` e publica a release com o `WinMac-Setup.exe`. Quem tem o WinMac recebe o aviso e atualiza em **Ajustes › Atualização de Software**. Push sem mudar a versão só compila (não publica nada).
 
 ## Créditos
 

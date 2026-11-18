@@ -1,17 +1,74 @@
-name: build
+name: build e release
+
+# Em todo push na main: compila o WinMac.
+# Se a versão em src/version.h ainda não tiver release, cria a tag vX.Y.Z e publica a release
+# com o WinMac-Setup.exe. É dessa release que o botão "Atualizar" dos Ajustes baixa a versão nova.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Versão
+        id: ver
+        shell: pwsh
+        run: |
+          $line = Select-String -Path src/version.h -Pattern '#define WINMAC_VERSION_STR "(.+)"' | Select-Object -First 1
+          $v = $line.Matches[0].Groups[1].Value
+          if (-not $v) { throw "Versão não encontrada em src/version.h" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Versão: $v"
+
       - name: Compilar
         shell: cmd
         run: build.cmd
+
       - uses: actions/upload-artifact@v4
         with:
-          name: WinMac-Setup
+          name: WinMac-Setup-${{ steps.ver.outputs.version }}
           path: dist/WinMac-Setup.exe
+
+      - name: Publicar release (se a versão for nova)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $tag = "v$v"
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            $assets = gh release view $tag --json assets --jq '.assets[].name'
+            if ($assets -notcontains 'WinMac-Setup.exe') {
+              Write-Host "Release $tag existe sem o instalador: anexando."
+              gh release upload $tag dist/WinMac-Setup.exe --clobber
+            } else {
+              Write-Host "Release $tag já existe com o instalador. Para lançar uma atualização, aumente a versão em src/version.h."
+            }
+            exit 0
+          }
+          $notes = @"
+          ## WinMac $v
+
+          **Instalar:** baixe o ``WinMac-Setup.exe`` abaixo e abra. Se aparecer "O Windows protegeu o computador", clique em *Mais informações › Executar assim mesmo*.
+
+          **Já tem o WinMac?** Ele avisa sozinho. Ou abra *Ajustes › Atualização de Software › Atualizar agora*.
+          "@
+          $notes | Out-File -Encoding utf8 notes.md
+          gh release create $tag dist/WinMac-Setup.exe --target "${{ github.sha }}" --title "WinMac $v" --notes-file notes.md --generate-notes --latest
+          Write-Host "Publicado: $tag"
