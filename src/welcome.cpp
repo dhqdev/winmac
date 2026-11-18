@@ -366,7 +366,10 @@ protected:
     }
 
     void OnTimer(UINT_PTR id) override {
-        if (id == T_ANIM) Invalidate();
+        if (id == T_ANIM) {
+            // só redesenha sem parar nas telas com o Pingo animado e com a janela em foco (economiza CPU)
+            if (Active() && (page_ == PHello || page_ == PInstall || page_ == PDone)) Invalidate();
+        }
         else if (id == T_WIFI && page_ == PWifi && wifi_ && wifi_->Refresh()) Invalidate();
     }
     void OnCloseRequest() override {

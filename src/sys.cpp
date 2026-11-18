@@ -1,4 +1,5 @@
 #include "sys.h"
+#include "sysx.h"
 #include <wlanapi.h>
 #include <mmdeviceapi.h>
 #include <endpointvolume.h>
@@ -164,13 +165,9 @@ void SetBrightness(int pct) {
 }
 
 void SetDarkMode(bool dark) {
-    HKEY k;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
-        DWORD v = dark ? 0 : 1;
-        RegSetValueExW(k, L"AppsUseLightTheme", 0, REG_DWORD, (BYTE*)&v, sizeof(v));
-        RegSetValueExW(k, L"SystemUsesLightTheme", 0, REG_DWORD, (BYTE*)&v, sizeof(v));
-        RegCloseKey(k);
-    }
+    const wchar_t* key = L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+    sysx::SetDword(HKEY_CURRENT_USER, key, L"AppsUseLightTheme", dark ? 0 : 1);
+    sysx::SetDword(HKEY_CURRENT_USER, key, L"SystemUsesLightTheme", dark ? 0 : 1);
     DWORD_PTR r;
     SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 200, &r);
 }

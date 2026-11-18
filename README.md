@@ -26,9 +26,9 @@ O Pingo é uma gotinha de **vidro líquido** que te recebe na instalação, acen
 | | |
 |---|---|
 | 🧊 **Vidro líquido** | Dock, barra de menus, menus, Central de Controle e janelas com desfoque real do Windows, brilho especular, borda com leve dispersão de cor e reflexo. Dá para regular o brilho ou reduzir a transparência. |
-| 🚥 **Botões estilo Mac** | Fechar, minimizar e ampliar em vermelho, amarelo e verde nas janelas dos apps (cinza quando a janela não está em foco, com ×, − e + ao passar o mouse). |
+| 🚥 **Botões estilo Mac** | Fechar, minimizar e ampliar em vermelho, amarelo e verde nas janelas dos apps, inclusive Chrome, Edge e Office (cinza quando a janela não está em foco, com ×, − e + ao passar o mouse). |
 | 🔀 **Alt+Tab de vidro** | Painel com **prévias ao vivo** das janelas. Tab avança, Shift+Tab volta, Q/W fecha a janela selecionada e Esc cancela. Também tem o modo só com ícones, como no Mac. |
-| ⚙️ **Ajustes do Sistema** | App próprio no estilo do macOS: Wi‑Fi, aparência, papel de parede, Dock, barra de menus, janelas, Explorador, limpeza de apps, som e tela, atualização. |
+| ⚙️ **Ajustes do Sistema** | App próprio no estilo do macOS, sem precisar das Configurações do Windows: Wi‑Fi, Bluetooth, aparência, papel de parede (inclusive o Destaque do Windows), Dock, barra de menus, janelas, notificações, som (escolha da saída), tela, bateria e energia, mouse, armazenamento, Explorador, limpeza de apps e atualização. |
 | 📶 **Wi‑Fi de verdade** | Lista de redes, conexão com senha e liga/desliga direto pela barra de menus, pelos Ajustes e na instalação. |
 | 🔄 **Atualização pelo GitHub** | Quando sai versão nova aparece um aviso. Em **Ajustes › Atualização de Software › Atualizar agora**, o WinMac baixa, confere o SHA‑256 e se reinstala sozinho. |
 | 🧹 **Sem apps pagos** | Remove apps de assinatura e propaganda (Xbox, Clipchamp, Candy Crush, Disney+…). **Word, Excel e PowerPoint continuam.** |
@@ -78,14 +78,14 @@ O Pingo é uma gotinha de **vidro líquido** que te recebe na instalação, acen
 2. Abra o arquivo. Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informações › Executar assim mesmo** (o app ainda não tem assinatura digital paga).
 3. Siga o Pingo: visual, Wi‑Fi, escolhas e **Instalar**.
 
-O WinMac fica em `%LOCALAPPDATA%\WinMac` e abre junto com o Windows. Para remover: **Configurações do Windows › Aplicativos › WinMac › Desinstalar**, ou **Ajustes › Geral › Desinstalar**. A barra de tarefas, os cursores e o papel de parede anteriores voltam.
+O WinMac fica em `%LOCALAPPDATA%\WinMac` e abre junto com o Windows. Para remover: **Ajustes › Geral › Desinstalar** (ou Configurações do Windows › Aplicativos › WinMac). Tudo volta como era: barra de tarefas, cursores, tema, papel de parede, sugestões do Windows e ajustes de mouse, energia e Explorador.
 
 ## Como funciona
 
 - **Nativo e leve**: C++ com Win32 e Direct2D, sem .NET, Electron nem serviços em segundo plano. Parado, gasta perto de 0% de CPU: só redesenha quando algo muda.
 - **Um único `.exe`**: o mesmo arquivo é o instalador, o Dock/barra, o app Ajustes (`--ajustes`) e o atualizador. A fonte Inter e os cursores vão embutidos.
 - **Vidro**: o desfoque vem do próprio Windows (DWM); o WinMac desenha por cima o brilho, a refração e o contorno.
-- **Botões das janelas**: o Windows 10 não deixa trocar esses botões sem mexer em arquivos do sistema. O WinMac cobre a área dos botões de cada janela com uma camadinha da mesma cor da barra de título e faz o mesmo trabalho. Não funciona em apps abertos como administrador; dá para desligar em **Ajustes › Janelas**.
+- **Botões das janelas**: o Windows 10 não deixa trocar esses botões sem mexer em arquivos do sistema. O WinMac localiza os botões reais de cada janela pela acessibilidade do Windows (UI Automation) e os cobre com uma camadinha da mesma cor da barra de título. Se não conseguir achar com segurança, deixa os botões originais. Não funciona em apps abertos como administrador; dá para desligar em **Ajustes › Janelas**.
 - **Limites honestos**: os cantos das janelas dos *outros* apps continuam como o Windows 10 desenha, porque arredondá-los exigiria injetar código no gerenciador de janelas. Tudo o que o WinMac desenha é arredondado.
 
 ## Compilar

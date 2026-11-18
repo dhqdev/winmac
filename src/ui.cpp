@@ -117,6 +117,7 @@ bool Window::SaveFrame(const std::wstring& png) {
 }
 
 void Window::Show() {
+    openStart_ = GetTickCount();
     Repaint();
     ShowWindow(glass_, SW_SHOWNOACTIVATE);
     ShowWindow(hwnd_, SW_SHOW);
@@ -124,7 +125,23 @@ void Window::Show() {
 }
 
 void Window::Close() {
+    if (!hwnd_ || closing_) return;
+    closing_ = true;
+    closeStart_ = GetTickCount();
+    EnableWindow(hwnd_, FALSE);
+    Repaint();
+}
+
+void Window::CloseNow() {
     if (hwnd_) DestroyWindow(hwnd_);
+}
+
+// curva de mola suave (passa um tiquinho do alvo e volta), como as animações do macOS
+static float Spring(float t) {
+    t = Clamp01(t);
+    const float c1 = 1.25f, c3 = c1 + 1.f;
+    float u = t - 1.f;
+    return 1.f + c3 * u * u * u + c1 * u * u;
 }
 
 void Window::Invalidate() {
@@ -169,21 +186,64 @@ void Window::Repaint() {
     clip_ = D2D1::RectF(-1e6f, -1e6f, 1e6f, 1e6f);
     dy_ = 0;
     int focusBefore = focus_;
-    c->SetTransform(D2D1::Matrix3x2F::Translation((float)pad, (float)pad));
+    // abrir: cresce de 94% com mola e aparece; fechar: encolhe para 96% e some
+    float scale = 1.f, alpha = 1.f;
+    if (closing_) {
+        float t = Clamp01((now - closeStart_) / 170.f);
+        float e = t * t;
+        scale = 1.f - 0.04f * e;
+        alpha = 1.f - e;
+        if (t >= 1.f) {
+            surf_.End(x_, y_, 0);
+            c = nullptr;
+            CloseNow();
+            return;
+        }
+        again_ = true;
+    } else if (openStart_) {
+        float t = Clamp01((now - openStart_) / 380.f);
+        scale = 0.94f + 0.06f * Spring(t);
+        alpha = Clamp01(t * 3.f);
+        if (t < 1.f) again_ = true;
+        else openStart_ = 0;
+    }
+    D2D1_MATRIX_3X2_F base = D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(W / 2.f, H / 2.f)) * D2D1::Matrix3x2F::Translation((float)pad, (float)pad);
+    c->SetTransform(base);
     auto rr = gfx::RR(0, 0, (float)W, (float)H, radius * s);
-    gfx::Shadow(c, rr, 24 * s, th.dark ? 0.55f : 0.30f, 9 * s);
-    gfx::Fill(c, rr, th.panel);
-    gfx::GlassOverlay(c, rr, th.dark, 0.5f);
+    // fundo (sombra + vidro) desenhado uma vez e reaproveitado em todos os quadros
+    wchar_t key[96];
+    swprintf_s(key, L"%d|%d|%d|%d|%.2f|%d", W, H, (int)th.dark, (int)(th.panel.a * 100), gfx::GlassStrength(), (int)gfx::ReduceTransparency());
+    if (!bg_ || bgKey_ != key) {
+        bgKey_ = key;
+        int bw = W + 2 * pad, bh = H + 2 * pad;
+        Theme tt = th;
+        float sc = s, rad = radius;
+        int pd = pad, ww = W, hh = H;
+        bg_ = gfx::Offscreen(bw, bh, [&](ID2D1DeviceContext* g) {
+            g->SetTransform(D2D1::Matrix3x2F::Translation((float)pd, (float)pd));
+            auto r2 = gfx::RR(0, 0, (float)ww, (float)hh, rad * sc);
+            gfx::Shadow(g, r2, 24 * sc, tt.dark ? 0.55f : 0.30f, 9 * sc);
+            gfx::Fill(g, r2, tt.panel);
+            gfx::GlassOverlay(g, r2, tt.dark, 0.5f);
+        });
+    }
+    if (bg_) {
+        c->SetTransform(D2D1::Matrix3x2F::Translation((float)-pad, (float)-pad) * base);
+        surf_.DrawBitmap(bg_.Get(), D2D1::RectF(0, 0, (float)(W + 2 * pad), (float)(H + 2 * pad)), 1.f, false);
+        c->SetTransform(base);
+    }
     ComPtr<ID2D1RoundedRectangleGeometry> clipGeo;
     gfx::d2d->CreateRoundedRectangleGeometry(rr, &clipGeo);
     c->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clipGeo.Get()), nullptr);   // nada desenha fora do painel
     Paint();
-    c->SetTransform(D2D1::Matrix3x2F::Translation((float)pad, (float)pad));
+    c->SetTransform(base);
     c->PopLayer();
-    c->SetTransform(D2D1::Matrix3x2F::Translation((float)pad, (float)pad));
+    c->SetTransform(base);
     gfx::Stroke(c, gfx::RR(0.5f, 0.5f, W - 0.5f, H - 0.5f, radius * s), th.dark ? gfx::White(0.10f) : gfx::White(0.5f), 1.f);
     c->SetTransform(D2D1::Matrix3x2F::Identity());
-    surf_.End(x_, y_);
+    BYTE a8 = (BYTE)(255 * Clamp01(alpha));
+    surf_.End(x_, y_, a8);
+    if (alpha < 1.f || openStart_ || closing_) glassSurf_.SetAlpha(x_ + pad, y_ + pad, a8);
     c = nullptr;
     // um clique fora do campo de texto em foco tira o foco
     if (pressed_ && focus_ == focusBefore && focus_ != 0 && hot_ != focus_) focus_ = 0;

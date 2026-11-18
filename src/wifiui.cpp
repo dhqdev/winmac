@@ -1,5 +1,6 @@
 #include "wifiui.h"
 #include "art.h"
+#include "sysx.h"
 
 bool WifiPanel::demo = false;
 
@@ -89,9 +90,18 @@ float WifiPanel::Draw(ui::Window& w, D2D1_RECT_F a, bool compact) {
     w.Label(L"Wi-Fi", compact ? 13.5f : 14.f, D2D1::RectF(L, y, R - 60 * s, y + hh), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD);
     bool on = radio_;
     if (w.Toggle(6001, R, y + hh / 2, on)) {
-        if (!wifi::SetRadio(on)) OpenPath(L"ms-settings:network-wifi");
-        Sleep(150);
-        Refresh(true);
+        radio_ = on;
+        HWND h = w.Hwnd();
+        auto alive = alive_;
+        std::thread([this, on, h, alive]() {
+            bool ok = sysx::SetRadioState(sysx::Radio::Wifi, on) || wifi::SetRadio(on);
+            Sleep(400);
+            RunAsync(h, [this, alive, ok]() {
+                if (!*alive) return;
+                if (!ok) { status_ = L"O Windows não deixou mudar o Wi-Fi agora."; statusErr_ = true; }
+                Refresh(true);
+            });
+        }).detach();
     }
     y += hh;
     if (!status_.empty()) {

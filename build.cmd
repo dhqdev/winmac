@@ -13,6 +13,6 @@ rc /nologo /fo build\app.res res\app.rc || exit /b 1
 cl /nologo /std:c++20 /O2 /GL /Gy /MT /EHsc /W3 /DUNICODE /D_UNICODE /utf-8 /Fobuild\ /Fe:build\WinMac.exe src\*.cpp build\app.res ^
   /link /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib windowscodecs.lib shell32.lib ^
   ole32.lib oleaut32.lib shlwapi.lib propsys.lib winhttp.lib comctl32.lib advapi32.lib wlanapi.lib shcore.lib version.lib wbemuuid.lib ^
-  iphlpapi.lib bcrypt.lib || exit /b 1
+  iphlpapi.lib bcrypt.lib powrprof.lib windowsapp.lib || exit /b 1
 copy /y build\WinMac.exe dist\WinMac-Setup.exe >nul
 echo OK: dist\WinMac-Setup.exe

@@ -7,6 +7,7 @@
 #include "art.h"
 #include "ui.h"
 #include "wifiui.h"
+#include "sysx.h"
 #include <tlhelp32.h>
 
 MenuBar g_menubar;
@@ -403,8 +404,7 @@ std::vector<PMItem> MenuBar::BuildMenu(const Elem& e) {
     bool has = target_ && IsWindow(target_);
     switch (e.kind) {
     case Logo:
-        m = { It(L"Sobre Este Computador", 1001), PMItem::Sep(), It(L"Ajustes do Sistema…", 1002), It(L"Configurações do Windows…", 1013),
-              It(L"Microsoft Store…", 1003) };
+        m = { It(L"Sobre Este Computador", 1001), PMItem::Sep(), It(L"Ajustes do Sistema…", 1002), It(L"Microsoft Store…", 1003) };
         {
             std::wstring av = cfg::Str(L"Update", L"Available");
             if (!av.empty()) {
@@ -624,6 +624,9 @@ struct CCState {
     std::wstring ssid;
     bool wifi = false;
     D2D1_RECT_F tWifi{}, tBt{}, tDark{}, tDnd{}, tileBright{}, tileVol{}, sBright{}, sVol{};
+    DWORD start = 0;
+    int bt = -1;            // Bluetooth: -1 sem rádio, 0 desligado, 1 ligado
+    bool dnd = false;       // não perturbe (notificações desligadas)
 };
 CCState* g_cc = nullptr;
 
@@ -631,6 +634,10 @@ void CCRender(CCState& m) {
     auto* c = m.surf.Begin(m.w, m.h);
     if (!c) return;
     float s = m.s;
+    float pt = Clamp01((GetTickCount() - m.start) / 200.f), pu = pt - 1.f;
+    float pe = 1.f + 2.2f * pu * pu * pu + 1.2f * pu * pu;
+    float psc = 0.92f + 0.08f * pe;
+    c->SetTransform(D2D1::Matrix3x2F::Scale(psc, psc, D2D1::Point2F(m.w - 20 * s, 0)));
     bool dk = gfx::DarkMode();
     auto rr = gfx::RR(0, 0, (float)m.w, (float)m.h, 18 * s);
     gfx::Fill(c, rr, gfx::Panel(dk, 0.55f, 0.62f));
@@ -652,15 +659,15 @@ void CCRender(CCState& m) {
     toggle(m.tWifi.left + 26 * s, (m.tWifi.top + m.tWifi.bottom) / 2, m.wifi, L"");
     gfx::Text(c, L"Wi-Fi", fT, D2D1::RectF(m.tWifi.left + 48 * s, m.tWifi.top + 8 * s, m.tWifi.right - 6 * s, (m.tWifi.top + m.tWifi.bottom) / 2 + 1 * s), fg, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_FAR);
     gfx::Text(c, m.wifi ? m.ssid : L"Desconectado", fS, D2D1::RectF(m.tWifi.left + 48 * s, (m.tWifi.top + m.tWifi.bottom) / 2 + 1 * s, m.tWifi.right - 6 * s, m.tWifi.bottom - 6 * s), sub, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    toggle(m.tBt.left + 26 * s, (m.tBt.top + m.tBt.bottom) / 2, false, L"");
+    toggle(m.tBt.left + 26 * s, (m.tBt.top + m.tBt.bottom) / 2, m.bt == 1, L"");
     gfx::Text(c, L"Bluetooth", fT, D2D1::RectF(m.tBt.left + 48 * s, m.tBt.top + 8 * s, m.tBt.right - 6 * s, (m.tBt.top + m.tBt.bottom) / 2 + 1 * s), fg, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_FAR);
-    gfx::Text(c, L"Configurações", fS, D2D1::RectF(m.tBt.left + 48 * s, (m.tBt.top + m.tBt.bottom) / 2 + 1 * s, m.tBt.right - 6 * s, m.tBt.bottom - 6 * s), sub, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    gfx::Text(c, m.bt < 0 ? L"Indisponível" : m.bt ? L"Ligado" : L"Desligado", fS, D2D1::RectF(m.tBt.left + 48 * s, (m.tBt.top + m.tBt.bottom) / 2 + 1 * s, m.tBt.right - 6 * s, m.tBt.bottom - 6 * s), sub, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     // modo escuro e não perturbe
     gfx::Fill(c, tileRR(m.tDark), tile);
     toggle(m.tDark.left + 26 * s, (m.tDark.top + m.tDark.bottom) / 2, m.dark, L"");
     gfx::Text(c, L"Modo Escuro", fT, D2D1::RectF(m.tDark.left + 48 * s, m.tDark.top, m.tDark.right - 6 * s, m.tDark.bottom), fg);
     gfx::Fill(c, tileRR(m.tDnd), tile);
-    toggle(m.tDnd.left + 26 * s, (m.tDnd.top + m.tDnd.bottom) / 2, false, L"");
+    toggle(m.tDnd.left + 26 * s, (m.tDnd.top + m.tDnd.bottom) / 2, m.dnd, L"");
     gfx::Text(c, L"Não Perturbe", fT, D2D1::RectF(m.tDnd.left + 48 * s, m.tDnd.top, m.tDnd.right - 6 * s, m.tDnd.bottom), fg);
     // sliders
     auto slider = [&](D2D1_RECT_F tileR, const wchar_t* title, float v, const wchar_t* g, bool enabled) {
@@ -682,7 +689,8 @@ void CCRender(CCState& m) {
     };
     m.sBright = slider(m.tileBright, L"Tela", m.bright / 100.f, L"", m.bright >= 0);
     m.sVol = slider(m.tileVol, L"Som", m.muted ? 0.f : m.vol, m.muted ? L"" : L"", true);
-    m.surf.End(m.x, m.y);
+    c->SetTransform(D2D1::Matrix3x2F::Identity());
+    m.surf.End(m.x, m.y, (BYTE)(255 * Clamp01(pt * 2.5f)));
 }
 
 float SliderValue(const D2D1_RECT_F& tr, float x, float s) {
@@ -723,9 +731,16 @@ LRESULT CALLBACK CCProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (m->drag == 0) sys::SetBrightness((int)m->bright);
         if (m->drag >= 0) { m->drag = -1; return 0; }
         if (In(m->tWifi, p)) { m->openWifi = true; m->done = true; }
-        else if (In(m->tBt, p)) { OpenPath(L"ms-settings:bluetooth"); m->done = true; }
-        else if (In(m->tDark, p)) { m->dark = !m->dark; sys::SetDarkMode(m->dark); }
-        else if (In(m->tDnd, p)) { OpenPath(L"ms-settings:quiethours"); m->done = true; }
+        else if (In(m->tBt, p)) {
+            if (m->bt >= 0) {
+                bool on = m->bt != 1;
+                m->bt = on ? 1 : 0;
+                CCRender(*m);
+                std::thread([on]() { sysx::SetRadioState(sysx::Radio::Bluetooth, on); }).detach();
+            } else { OpenAjustes(L"bluetooth"); m->done = true; }
+        }
+        else if (In(m->tDark, p)) { m->dark = !m->dark; sys::SetDarkMode(m->dark); CCRender(*m); }
+        else if (In(m->tDnd, p)) { m->dnd = !m->dnd; sysx::SetToasts(!m->dnd); CCRender(*m); }
         return 0;
     case WM_MOUSEWHEEL: {
         m->vol = std::clamp(m->vol + (GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 0.04f : -0.04f), 0.f, 1.f);
@@ -741,6 +756,14 @@ LRESULT CALLBACK CCProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE) m->done = true;
+        return 0;
+    case WM_TIMER:
+        CCRender(*m);
+        if (GetTickCount() - m->start > 220) KillTimer(h, 1);
+        return 0;
+    case WM_APP + 70:   // estado do Bluetooth lido em segundo plano
+        m->bt = (int)wp;
+        CCRender(*m);
         return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
@@ -785,7 +808,14 @@ void MenuBar::ControlCenter() {
     m.surf.Attach(m.hwnd);
     gfx::SetBlur(m.hwnd, true);
     gfx::SetRoundRegion(m.hwnd, 0, 0, m.w, m.h, (int)(18 * s));
+    m.start = GetTickCount();
+    m.dnd = !sysx::ToastsEnabled();
+    {
+        HWND target = m.hwnd;
+        std::thread([target]() { PostMessageW(target, WM_APP + 70, (WPARAM)(INT_PTR)sysx::RadioState(sysx::Radio::Bluetooth), 0); }).detach();
+    }
     CCRender(m);
+    SetTimer(m.hwnd, 1, 10, nullptr);
     ShowWindow(m.hwnd, SW_SHOW);
     SetForegroundWindow(m.hwnd);
     SetFocus(m.hwnd);
@@ -854,7 +884,7 @@ LRESULT MenuBar::OnMsg(UINT m, WPARAM w, LPARAM l) {
         case TrayIcon:
             if (e.index < (int)tray::Icons().size()) tray::Click(tray::Icons()[e.index], false, m == WM_LBUTTONDBLCLK);
             break;
-        case Battery: OpenPath(L"ms-settings:batterysaver"); break;
+        case Battery: OpenAjustes(L"energia"); break;
         case Wifi:
             if (m == WM_LBUTTONUP) OpenWifiPopup(x_ + (int)e.r.right + (int)(8 * s_), y_ + h_ + (int)(4 * s_));
             break;

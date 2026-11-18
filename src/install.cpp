@@ -5,6 +5,7 @@
 #include "art.h"
 #include "gfx.h"
 #include "sys.h"
+#include "sysx.h"
 #include <tlhelp32.h>
 #include <appmodel.h>
 
@@ -142,7 +143,8 @@ bool TaskbarToTop(bool top) {
     BYTE v[64] = {};
     DWORD sz = sizeof(v);
     if (RegGetValueW(HKEY_CURRENT_USER, key, L"Settings", RRF_RT_REG_BINARY, nullptr, v, &sz) != ERROR_SUCCESS || sz < 13) return false;
-    BYTE want = top ? 1 : 3;
+    int orig = cfg::Int(L"Backup", L"TaskbarEdge", 3);
+    BYTE want = top ? 1 : (BYTE)(orig >= 0 && orig <= 3 ? orig : 3);
     if (v[12] == want) return false;
     if (top) cfg::SetInt(L"Backup", L"TaskbarEdge", v[12]);
     v[12] = want;
@@ -317,10 +319,10 @@ bool ApplyWallpaperFile(const std::wstring& path) {
     wchar_t cur[MAX_PATH] = {};
     SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, cur, 0);
     if (cfg::Str(L"Backup", L"Wallpaper").empty() && cur[0] && !wcsstr(cur, L"\\WinMac\\")) cfg::Set(L"Backup", L"Wallpaper", cur);
-    RegDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\DesktopSpotlight\\Settings", L"EnabledState", 0);
-    RegDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Wallpapers", L"BackgroundType", 0);
-    RegStr(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"WallpaperStyle", L"10");
-    RegStr(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"TileWallpaper", L"0");
+    sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\DesktopSpotlight\\Settings", L"EnabledState", 0);
+    sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Wallpapers", L"BackgroundType", 0);
+    sysx::SetString(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"WallpaperStyle", L"10");
+    sysx::SetString(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"TileWallpaper", L"0");
     cfg::Set(L"Screen", L"Wallpaper", path);
     return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (void*)path.c_str(), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE) != FALSE;
 }
@@ -329,9 +331,20 @@ bool ApplyWallpaper(int preset) {
     int w = GetSystemMetrics(SM_CXSCREEN), h = GetSystemMetrics(SM_CYSCREEN);
     w = std::max(w, 1280);
     h = std::max(h, 720);
-    std::wstring path = Dir() + L"\\wallpaper-" + std::to_wstring(preset) + L".jpg";
+    // alterna entre dois nomes (o Windows só recarrega se o caminho mudar) e apaga os antigos
+    std::wstring cur = cfg::Str(L"Screen", L"Wallpaper");
+    std::wstring path = Dir() + (cur.find(L"wallpaper-a.jpg") != std::wstring::npos ? L"\\wallpaper-b.jpg" : L"\\wallpaper-a.jpg");
     CreateDirectoryW(Dir().c_str(), nullptr);
     if (!art::SaveWallpaper(preset, w, h, path)) return false;
+    WIN32_FIND_DATAW fd;
+    HANDLE fh = FindFirstFileW((Dir() + L"\\wallpaper*.jpg").c_str(), &fd);
+    if (fh != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring f = Dir() + L"\\" + fd.cFileName;
+            if (_wcsicmp(f.c_str(), path.c_str()) != 0 && _wcsicmp(f.c_str(), cur.c_str()) != 0) DeleteFileW(f.c_str());
+        } while (FindNextFileW(fh, &fd));
+        FindClose(fh);
+    }
     cfg::SetInt(L"Screen", L"WallpaperPreset", preset);
     return ApplyWallpaperFile(path);
 }
@@ -354,11 +367,11 @@ void DisableAds() {
                               L"SubscribedContentEnabled", L"SubscribedContent-310093Enabled", L"SubscribedContent-338388Enabled",
                               L"SubscribedContent-338389Enabled", L"SubscribedContent-338393Enabled", L"SubscribedContent-353694Enabled",
                               L"SubscribedContent-353696Enabled", L"SubscribedContent-353698Enabled", L"RotatingLockScreenOverlayEnabled" })
-        RegDword(HKEY_CURRENT_USER, c, n, 0);
-    RegDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\UserProfileEngagement", L"ScoobeSystemSettingEnabled", 0);
-    RegDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"ShowSyncProviderNotifications", 0);
-    RegDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo", L"Enabled", 0);
-    RegDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.Suggested", L"Enabled", 0);
+        sysx::SetDword(HKEY_CURRENT_USER, c, n, 0);
+    sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\UserProfileEngagement", L"ScoobeSystemSettingEnabled", 0);
+    sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"ShowSyncProviderNotifications", 0);
+    sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo", L"Enabled", 0);
+    sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.Suggested", L"Enabled", 0);
 }
 
 const std::vector<PaidApp>& PaidApps() {
@@ -439,6 +452,11 @@ bool Install(const Options& o, const std::function<void(int, int, const std::wst
     ApplyTheme(o.theme);
 
     step(4, L"Ajustando o Windows…");
+    {
+        ANIMATIONINFO ai{ sizeof(ai) };
+        SystemParametersInfoW(SPI_GETANIMATION, sizeof(ai), &ai, 0);
+        if (!ai.iMinAnimate) { ai.iMinAnimate = 1; SystemParametersInfoW(SPI_SETANIMATION, sizeof(ai), &ai, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE); }
+    }
     SetAutostart(true);
     std::wstring sm = StartMenuDir();
     SHCreateDirectoryExW(nullptr, sm.c_str(), nullptr);
@@ -483,7 +501,8 @@ int ApplyUpdate(const std::wstring& dir) {
 }
 
 int Uninstall() {
-    if (MessageBoxW(nullptr, L"Remover o WinMac deste computador?\n\nA barra de tarefas, os cursores e o papel de parede anteriores voltam.",
+    if (MessageBoxW(nullptr, L"Remover o WinMac deste computador?\n\nTudo volta como era antes: barra de tarefas, cursores, tema claro/escuro, papel de parede, "
+                             L"sugestões do Windows, ajustes de mouse, energia e do Explorador.\n\nApps removidos na limpeza podem ser instalados de novo pela Microsoft Store.",
                     L"Desinstalar o WinMac", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND) != IDYES)
         return 0;
     cfg::Init(Dir());
@@ -498,8 +517,21 @@ int Uninstall() {
     DeleteFileW((sm + L"\\Ajustes do WinMac.lnk").c_str());
     RemoveDirectoryW(sm.c_str());
     RegDeleteTreeW(HKEY_CURRENT_USER, kUninst);
-    int edge = cfg::Int(L"Backup", L"TaskbarEdge", -1);
-    if (edge == 3 && TaskbarToTop(false)) RestartExplorer();
+    bool explorer = cfg::Int(L"Backup", L"TaskbarEdge", -1) >= 0 && TaskbarToTop(false);
+    // tudo o que o WinMac mudou no registro, no mouse e na energia volta ao valor original
+    sysx::RestoreAll();
+    if (cfg::Int(L"Backup", L"FontInstalled", 0)) {
+        wchar_t lad[MAX_PATH];
+        ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts\\InterVariable.ttf", lad, MAX_PATH);
+        RemoveFontResourceW(lad);
+        HKEY fk;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts", 0, KEY_SET_VALUE, &fk) == ERROR_SUCCESS) {
+            RegDeleteValueW(fk, L"Inter Variable (TrueType)");
+            RegCloseKey(fk);
+        }
+        MoveFileExW(lad, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+    }
+    if (explorer) RestartExplorer();
     // apaga a pasta depois que este processo sair
     std::wstring d = Dir();
     wchar_t sys[MAX_PATH];

@@ -9,4 +9,5 @@ void Init();
 void Shutdown();
 void Reload();
 void RenderPreview(const std::wstring& png);
+void Diagnose(const std::wstring& out);   // lista onde os botões de cada janela foram achados
 }

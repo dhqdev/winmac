@@ -20,7 +20,6 @@
 
 HINSTANCE g_inst = nullptr;
 HWND g_ctrl = nullptr;
-namespace anim { void Init(); void Reload(); }
 
 namespace {
 UINT g_shellMsg = 0, g_taskbarCreated = 0;
@@ -234,7 +233,6 @@ void OnReload(WPARAM what) {
     case RL_WINDOWS:
         traffic::Reload();
         switcher::Reload();
-        anim::Reload();
         break;
     case RL_WALLPAPER: break;
     default:
@@ -245,7 +243,6 @@ void OnReload(WPARAM what) {
         CreateCorners();
         traffic::Reload();
         switcher::Reload();
-        anim::Reload();
         break;
     }
 }
@@ -392,7 +389,6 @@ int RunShell(const std::wstring& args) {
     CreateCorners();
     RegisterShellHookWindow(g_ctrl);
     launchpad::Preload();
-    anim::Init();
     switcher::Init();
     traffic::Init();
     if (args.find(L"--bench") != std::wstring::npos) {
@@ -434,7 +430,7 @@ std::wstring ArgAfter(const std::wstring& args, const wchar_t* flag) {
 void RenderShots(const std::wstring& dir) {
     CreateDirectoryW(dir.c_str(), nullptr);
     WifiPanel::demo = true;
-    for (const wchar_t* p : { L"wifi", L"geral", L"update", L"aparencia", L"papel", L"dock", L"barra", L"janelas", L"arquivos", L"apps", L"som", L"sobre" })
+    for (const wchar_t* p : { L"wifi", L"bluetooth", L"geral", L"update", L"aparencia", L"papel", L"dock", L"barra", L"janelas", L"notificacoes", L"som", L"tela", L"energia", L"mouse", L"armazenamento", L"arquivos", L"apps", L"sobre" })
         settings::RenderPreview(p, dir + L"\\ajustes_" + p + L".png");
     for (int i = 0; i < 6; ++i) welcome::RenderPreview(i, dir + L"\\welcome_" + std::to_wstring(i) + L".png");
     switcher::RenderPreview(dir + L"\\alttab.png");
@@ -589,6 +585,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR cmd, int) {
         art::ExportArt(ArgAfter(args, L"--export-art"));
     } else if (args.find(L"--shots") != std::wstring::npos) {
         RenderShots(ArgAfter(args, L"--shots"));
+    } else if (args.find(L"--diag-traffic") != std::wstring::npos) {
+        traffic::Diagnose(ArgAfter(args, L"--diag-traffic"));
     } else if (args.find(L"--test-overlays") != std::wstring::npos) {
         // teste ao vivo só dos botões semáforo e do Alt+Tab (não mexe na barra de tarefas nem no Dock)
         int secs = std::max(3, _wtoi(ArgAfter(args, L"--test-overlays").c_str()));
@@ -605,8 +603,11 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR cmd, int) {
         rc = settings::Run(ArgAfter(args, L"--ajustes"));
     } else if (args.find(L"--welcome") != std::wstring::npos) {
         rc = welcome::Run(false);
-    } else if (args.find(L"--setup") != std::wstring::npos || (!install::IsInstalledCopy() && args.find(L"--shell") == std::wstring::npos)) {
+    } else if (args.find(L"--setup") != std::wstring::npos ||
+               (!install::IsInstalledCopy() && args.find(L"--shell") == std::wstring::npos && args.find(L"--") == std::wstring::npos)) {
         rc = welcome::Run(true);   // rodando o WinMac-Setup.exe baixado: boas-vindas + instalação
+    } else if (!install::IsInstalledCopy() && args.find(L"--shell") == std::wstring::npos && args.find(L"--wait") == std::wstring::npos) {
+        rc = 2;   // opção desconhecida fora da instalação: não faz nada (nunca abre o Dock por engano)
     } else {
         if (args.find(L"--dump ") != std::wstring::npos) gfx::SetDumpDir(ArgAfter(args, L"--dump"));
         rc = RunShell(args);

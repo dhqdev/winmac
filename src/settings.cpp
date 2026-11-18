@@ -8,11 +8,13 @@
 #include "net.h"
 #include "sys.h"
 #include "version.h"
+#include "sysx.h"
 #include <shobjidl.h>
 
 namespace settings {
 namespace {
-enum Page { PWifi, PBluetooth, PGeral, PUpdate, PAparencia, PPapel, PDock, PBarra, PJanelas, PArquivos, PApps, PSom, PSobre, PCount };
+enum Page { PWifi, PBluetooth, PGeral, PUpdate, PAparencia, PPapel, PDock, PBarra, PJanelas, PNotif, PSom, PTela, PEnergia, PMouse,
+            PArmaz, PArquivos, PApps, PSobre, PCount };
 struct PageInfo { const wchar_t* key; const wchar_t* title; const wchar_t* glyph; int r, g, b; };
 const PageInfo kPages[PCount] = {
     { L"wifi", L"Wi-Fi", L"\xE701", 10, 132, 255 },
@@ -24,12 +26,17 @@ const PageInfo kPages[PCount] = {
     { L"dock", L"Mesa e Dock", L"\xE71D", 40, 40, 44 },
     { L"barra", L"Barra de Menus", L"\xE700", 40, 40, 44 },
     { L"janelas", L"Janelas e Alt+Tab", L"\xE7C4", 94, 92, 230 },
+    { L"notificacoes", L"Notificações", L"\xE7E7", 255, 69, 58 },
+    { L"som", L"Som", L"\xE767", 255, 55, 95 },
+    { L"tela", L"Tela", L"\xE7F4", 10, 132, 255 },
+    { L"energia", L"Bateria e Energia", L"\xE83F", 48, 190, 90 },
+    { L"mouse", L"Mouse e Teclado", L"\xE962", 120, 120, 128 },
+    { L"armazenamento", L"Armazenamento", L"\xEDA2", 120, 120, 128 },
     { L"arquivos", L"Arquivos (Explorador)", L"\xE8B7", 52, 150, 230 },
     { L"apps", L"Apps e Limpeza", L"\xE74D", 255, 69, 58 },
-    { L"som", L"Som e Tela", L"\xE767", 255, 55, 95 },
     { L"sobre", L"Sobre o WinMac", L"\xE946", 142, 142, 147 },
 };
-const int kGroups[] = { PBluetooth, PUpdate, PJanelas, PSom };   // linha extra depois destes
+const int kGroups[] = { PBluetooth, PUpdate, PJanelas, PMouse, PApps };   // espaço depois destes
 const UINT WM_GOTO = WM_APP + 40;
 enum { T_REFRESH = 10, T_ANIMPAGE = 11 };
 
@@ -40,13 +47,7 @@ DWORD RegDw(const wchar_t* key, const wchar_t* name, DWORD def) {
     if (RegGetValueW(HKEY_CURRENT_USER, key, name, RRF_RT_REG_DWORD, nullptr, &v, &sz) != ERROR_SUCCESS) return def;
     return v;
 }
-void SetRegDw(const wchar_t* key, const wchar_t* name, DWORD v) {
-    HKEY k;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, key, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) == ERROR_SUCCESS) {
-        RegSetValueExW(k, name, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
-        RegCloseKey(k);
-    }
-}
+void SetRegDw(const wchar_t* key, const wchar_t* name, DWORD v) { sysx::SetDword(HKEY_CURRENT_USER, key, name, v); }
 const wchar_t* kAdv = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
 const wchar_t* kExp = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer";
 
@@ -69,6 +70,7 @@ public:
     bool quitOnClose = true;
 
     void Go(Page p) {
+        if (p != page_) pageStart_ = GetTickCount();
         page_ = p;
         focusPage();
         Invalidate();
@@ -78,14 +80,19 @@ public:
         Focus(0);
         if (page_ == PUpdate && !checking_ && !upd_.ok && upd_.error.empty()) StartCheck();
         if (page_ == PApps) ScanApps();
-        if (page_ == PPapel && thumbs_.empty())
-            for (int i = 0; i < (int)art::Wallpapers().size(); ++i) thumbs_.push_back(art::RenderWallpaper(i, 288, 162));
-        if (page_ == PSom) {
+        if (page_ == PSom || page_ == PTela) {
             vol_ = sys::GetVolume(&muted_);
             bright_ = (float)sys::GetBrightness();
+            outs_ = sysx::OutputDevices();
         }
-        if (page_ == PSobre) SetTimer(Hwnd(), T_ANIMPAGE, 33, nullptr);
-        else KillTimer(Hwnd(), T_ANIMPAGE);
+        if (page_ == PBluetooth || page_ == PWifi) ReadRadio();
+        if (page_ == PEnergia) power_ = sysx::GetPower();
+        if (page_ == PArmaz) {
+            drives_ = sysx::Drives();
+            winmacSize_ = sysx::FolderSize(install::Dir());
+            macdeskSize_ = MacDeskLeftover() ? sysx::FolderSize(MacDeskDir()) : 0;
+        }
+        UpdateAnimTimer();
     }
 
 protected:
@@ -107,7 +114,54 @@ protected:
     bool removing_ = false;
     std::wstring appsMsg_;
     std::vector<ComPtr<IWICBitmap>> thumbs_;
+    DWORD pageStart_ = 0;
+    float sideScroll_ = 0, sideH_ = 0;
+    int bt_ = -2;   // -2 lendo, -1 sem Bluetooth, 0 desligado, 1 ligado
+    bool btBusy_ = false;
+    sysx::Power power_;
+    std::vector<sysx::AudioDev> outs_;
+    std::vector<sysx::Drive> drives_;
+    uint64_t winmacSize_ = 0, macdeskSize_ = 0;
+    bool cleaning_ = false;
+    std::wstring storageMsg_;
+
+    static std::wstring MacDeskDir() {
+        wchar_t b[MAX_PATH];
+        ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\MacDesk", b, MAX_PATH);
+        return b;
+    }
+    // sobras do MacDesk antigo: só apaga se nada do Windows ainda aponta para lá (cursores, papel de parede)
+    static bool MacDeskLeftover() {
+        std::wstring d = MacDeskDir();
+        if (GetFileAttributesW(d.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+        wchar_t wp[MAX_PATH] = {};
+        SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, wp, 0);
+        if (StrStrIW(wp, L"\\MacDesk\\")) return false;
+        wchar_t cur[MAX_PATH] = {};
+        DWORD sz = sizeof(cur);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Cursors", L"Arrow", RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, nullptr, cur, &sz) == ERROR_SUCCESS &&
+            StrStrIW(cur, L"\\MacDesk\\"))
+            return false;
+        return !FindWindowW(L"MacDesk.Ctrl", nullptr);
+    }
+    void ReadRadio() {
+        auto r = std::make_shared<int>(-1);
+        Async([r]() { *r = sysx::RadioState(sysx::Radio::Bluetooth); }, [this, r]() { bt_ = *r; Invalidate(); });
+    }
+    void UpdateAnimTimer() {
+        if (page_ == PSobre && Active()) SetTimer(Hwnd(), T_ANIMPAGE, 33, nullptr);
+        else KillTimer(Hwnd(), T_ANIMPAGE);
+    }
+    void OnActiveChanged(bool) override { UpdateAnimTimer(); }
+    bool Danger(int id, D2D1_RECT_F r, const std::wstring& t) {
+        auto keep = th.accent;
+        th.accent = gfx::Rgba(255, 59, 48);
+        bool f = Button(id, r, t, true);
+        th.accent = keep;
+        return f;
+    }
     bool wallBusy_ = false;
+    std::wstring wallMsg_;
     float vol_ = 0.5f, bright_ = -1;
     bool muted_ = false;
     WPARAM pendingNotify_ = (WPARAM)-1;
@@ -308,7 +362,9 @@ protected:
 
     // ---------- desenho ----------
     void Sidebar() {
-        float y = 50 * s;
+        D2D1_RECT_F view = D2D1::RectF(0, 46 * s, sideW_, (float)H - 4 * s);
+        BeginScroll(view, sideScroll_, sideH_);
+        float y = view.top + 4 * s;
         // cartão do topo
         D2D1_RECT_F card = D2D1::RectF(12 * s, y, sideW_ - 12 * s, y + 56 * s);
         if (Row(90, card, 8)) Go(PSobre);
@@ -320,22 +376,34 @@ protected:
         art::Pingo(c, card.left + 26 * s, y + 28 * s, 30 * s, p);
         Label(L"WinMac", 14, D2D1::RectF(card.left + 54 * s, y + 8 * s, card.right, y + 30 * s), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         Label(L"Versão " WINMAC_VERSION, 11.5f, D2D1::RectF(card.left + 54 * s, y + 28 * s, card.right, y + 48 * s), th.sub);
-        y += 66 * s;
+        y += 64 * s;
         bool upAvail = !cfg::Str(L"Update", L"Available").empty() || upd_.newer;
+        float rowH = 29 * s;
+        // posição de cada item (para o destaque deslizar até o item escolhido)
+        std::vector<float> ys(PCount);
+        float yy = y;
         for (int i = 0; i < PCount; ++i) {
-            D2D1_RECT_F r = D2D1::RectF(10 * s, y, sideW_ - 10 * s, y + 30 * s);
+            ys[i] = yy;
+            yy += rowH + 1 * s;
+            for (int g : kGroups)
+                if (g == i) yy += 9 * s;
+        }
+        float hy = Anim(50, ys[page_], 0.16f);
+        gfx::Fill(c, gfx::RR(10 * s, hy, sideW_ - 10 * s, hy + rowH, 7 * s), Active() ? th.accent : (th.dark ? gfx::White(0.12f) : gfx::Black(0.08f)));
+        for (int i = 0; i < PCount; ++i) {
+            D2D1_RECT_F r = D2D1::RectF(10 * s, ys[i], sideW_ - 10 * s, ys[i] + rowH);
             bool sel = i == page_;
-            if (sel) gfx::Fill(c, gfx::RR(r.left, r.top, r.right, r.bottom, 7 * s), Active() ? th.accent : (th.dark ? gfx::White(0.12f) : gfx::Black(0.08f)));
-            else if (Row(100 + i, r, 7)) Go((Page)i);
+            if (!sel && Row(100 + i, r, 7)) Go((Page)i);
             if (sel) Hover(100 + i, r);
             auto& pi = kPages[i];
-            art::SectionIcon(c, D2D1::RectF(r.left + 8 * s, r.top + 4 * s, r.left + 30 * s, r.top + 26 * s), gfx::Rgba(pi.r, pi.g, pi.b), pi.glyph);
-            Label(pi.title, 13, D2D1::RectF(r.left + 38 * s, r.top, r.right - 24 * s, r.bottom), sel && Active() ? gfx::White(1) : th.text);
+            art::SectionIcon(c, D2D1::RectF(r.left + 8 * s, r.top + 4 * s, r.left + 29 * s, r.top + 25 * s), gfx::Rgba(pi.r, pi.g, pi.b), pi.glyph);
+            bool onHl = std::fabs(hy - ys[i]) < rowH * 0.5f;
+            Label(pi.title, 13, D2D1::RectF(r.left + 37 * s, r.top, r.right - 22 * s, r.bottom), onHl && Active() ? gfx::White(1) : th.text);
             if (i == PUpdate && upAvail) gfx::Circle(c, r.right - 14 * s, (r.top + r.bottom) / 2, 4.5f * s, gfx::Rgba(255, 69, 58));
-            y += 31 * s;
-            for (int g : kGroups)
-                if (g == i) y += 10 * s;
         }
+        float h = yy - view.top + 8 * s;
+        if (std::fabs(h - sideH_) > 1) { sideH_ = h; KeepAnimating(); }
+        EndScroll();
     }
 
     void Paint() override {
@@ -355,6 +423,14 @@ protected:
         R_ = W - 28 * s;
         Label(kPages[page_].title, 17, D2D1::RectF(L_, 10 * s, R_, 46 * s), th.text, DWRITE_FONT_WEIGHT_BOLD);
         D2D1_RECT_F view = D2D1::RectF(sideW_ + 1, 52 * s, (float)W - 2 * s, (float)H - 6 * s);
+        // troca de página: o conteúdo entra deslizando de leve e aparecendo (estilo macOS)
+        float pt = pageStart_ ? Clamp01((GetTickCount() - pageStart_) / 240.f) : 1.f;
+        float pe = 1.f - std::pow(1.f - pt, 3.f);
+        if (pt < 1.f) KeepAnimating();
+        c->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), std::max(0.02f, pe)), nullptr);
+        D2D1_MATRIX_3X2_F pold;
+        c->GetTransform(&pold);
+        c->SetTransform(D2D1::Matrix3x2F::Translation((1.f - pe) * 18 * s, 0) * pold);
         BeginScroll(view, scroll_[page_], contentH_[page_]);
         float y = view.top + 6 * s;
         id_ = 1000;
@@ -371,12 +447,19 @@ protected:
         case PArquivos: PageArquivos(y); break;
         case PApps: PageApps(y); break;
         case PSom: PageSom(y); break;
+        case PTela: PageTela(y); break;
+        case PNotif: PageNotif(y); break;
+        case PEnergia: PageEnergia(y); break;
+        case PMouse: PageMouse(y); break;
+        case PArmaz: PageArmaz(y); break;
         case PSobre: PageSobre(y, view); break;
         default: break;
         }
         float h = y - view.top + 10 * s;
         if (std::fabs(h - contentH_[page_]) > 1) { contentH_[page_] = h; KeepAnimating(); }
         EndScroll();
+        c->SetTransform(pold);
+        c->PopLayer();
         if (pendingNotify_ != (WPARAM)-1 && !MouseDown()) {
             NotifyShell(pendingNotify_);
             pendingNotify_ = (WPARAM)-1;
@@ -395,9 +478,20 @@ protected:
 
     void PageBluetooth(float& y) {
         Group(y, [&] {
-            if (RowButton(L"Bluetooth e dispositivos", L"Parear fones, mouses e teclados", L"Abrir…")) OpenPath(L"ms-settings:bluetooth");
+            if (bt_ == -2) { RowInfo(L"Bluetooth", L"Verificando…"); return; }
+            if (bt_ == -1) { RowInfo(L"Bluetooth", L"Este computador não tem Bluetooth"); return; }
+            bool on = bt_ == 1;
+            if (RowToggle(L"Bluetooth", btBusy_ ? L"Mudando…" : (on ? L"Ligado — visível para fones e mouses" : L"Desligado"), on) && !btBusy_) {
+                btBusy_ = true;
+                bt_ = on ? 1 : 0;
+                auto ok = std::make_shared<bool>(false);
+                Async([on, ok]() { *ok = sysx::SetRadioState(sysx::Radio::Bluetooth, on); }, [this]() { btBusy_ = false; ReadRadio(); });
+            }
         });
-        Note(y, L"O Windows não permite que outros apps liguem o Bluetooth diretamente; o painel do Windows abre já na página certa.");
+        Group(y, [&] {
+            if (RowButton(L"Parear um dispositivo novo", L"Fones, caixas de som, mouses e teclados", L"Parear…")) OpenPath(L"ms-settings:bluetooth");
+        });
+        Note(y, L"O pareamento usa a janela do próprio Windows, que é a única que tem permissão para isso.");
     }
 
     void PageGeral(float& y) {
@@ -413,6 +507,18 @@ protected:
             MEMORYSTATUSEX ms{ sizeof(ms) };
             GlobalMemoryStatusEx(&ms);
             mem = std::to_wstring((int)std::round(ms.ullTotalPhys / 1073741824.0)) + L" GB";
+        }
+        {
+            float h = 84 * s;
+            auto rr = gfx::RR(L_, y, R_, y + h, 10 * s);
+            gfx::Fill(c, rr, th.group);
+            gfx::Stroke(c, rr, th.groupStroke, 1.f);
+            Label(L"Desinstalar o WinMac", 13.5f, D2D1::RectF(L_ + 14 * s, y + 12 * s, R_ - 190 * s, y + 34 * s), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            Paragraph(L"Volta tudo como era antes: barra de tarefas, cursores, tema, papel de parede e ajustes do Windows.", 11.5f,
+                      D2D1::RectF(L_ + 14 * s, y + 36 * s, R_ - 190 * s, y + 78 * s), th.sub);
+            if (Danger(Id(), D2D1::RectF(R_ - 176 * s, y + h / 2 - 15 * s, R_ - 14 * s, y + h / 2 + 15 * s), L"Desinstalar…"))
+                ShellExecuteW(nullptr, L"open", install::IsInstalled() ? install::InstalledExe().c_str() : SelfPath().c_str(), L"--uninstall", nullptr, SW_SHOWNORMAL);
+            y += h + 18 * s;
         }
         Caption(y, L"SOBRE ESTE COMPUTADOR");
         Group(y, [&] {
@@ -430,10 +536,7 @@ protected:
             if (RowButton(L"Pasta do WinMac", L"Configuração e arquivos", L"Abrir")) OpenPath(install::Dir());
             if (RowButton(L"Reiniciar o WinMac", L"Recarrega Dock, barra e widgets", L"Reiniciar")) NotifyShell(RL_ALL);
         });
-        Group(y, [&] {
-            if (RowButton(L"Desinstalar o WinMac", L"Volta a barra de tarefas, cursores e papel de parede anteriores", L"Desinstalar…"))
-                ShellExecuteW(nullptr, L"open", install::InstalledExe().c_str(), L"--uninstall", nullptr, SW_SHOWNORMAL);
-        });
+
     }
 
     void PageUpdate(float& y) {
@@ -571,6 +674,11 @@ protected:
     void PagePapel(float& y) {
         int cur = cfg::Int(L"Screen", L"WallpaperPreset", -1);
         auto& ws = art::Wallpapers();
+        // uma miniatura por quadro: a página abre na hora e as imagens vão aparecendo
+        if (thumbs_.size() < ws.size()) {
+            thumbs_.push_back(art::RenderWallpaper((int)thumbs_.size(), 288, 162));
+            KeepAnimating();
+        }
         int per = 3;
         float gap = 16 * s, tw = (R_ - L_ - (per - 1) * gap) / per, thh = tw * 9 / 16;
         for (int i = 0; i < (int)ws.size(); ++i) {
@@ -579,6 +687,8 @@ protected:
             bool hov = Hover(1700 + i, r);
             if (Clicked(1700 + i, r) && !wallBusy_) {
                 wallBusy_ = true;
+                wallMsg_.clear();
+                cfg::SetInt(L"Screen", L"Enforce", 1);
                 int idx = i;
                 Async([idx]() { install::ApplyWallpaper(idx); }, [this]() { wallBusy_ = false; NotifyShell(RL_WALLPAPER); Invalidate(); });
                 cfg::SetInt(L"Screen", L"WallpaperPreset", i);
@@ -601,10 +711,29 @@ protected:
         }
         y += ((int)ws.size() + per - 1) / per * (thh + 34 * s) + 8 * s;
         Group(y, [&] {
+            bool spot = cur == -2;
+            if (RowButton(L"Destaque do Windows", spot ? L"Ativo: uma foto nova da Microsoft todo dia" : L"Fotos novas da Microsoft todo dia", spot ? L"Ativo" : L"Usar", !spot, !spot)) {
+                cfg::SetInt(L"Screen", L"Enforce", 0);
+                cfg::SetInt(L"Screen", L"WallpaperPreset", -2);
+                sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\DesktopSpotlight\\Settings", L"EnabledState", 1);
+                sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Wallpapers", L"BackgroundType", 3);
+                DWORD_PTR r;
+                SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETDESKWALLPAPER, 0, SMTO_ABORTIFHUNG, 300, &r);
+                wallMsg_ = L"Destaque do Windows ligado. Se a foto não trocar em alguns segundos, escolha \"Destaque do Windows\" na lista \"Tela de fundo\" do Windows.";
+                NotifyShell(RL_WALLPAPER);
+            }
             if (RowButton(L"Usar uma foto sua", L"JPG, PNG ou BMP", L"Escolher…")) PickWallpaperFile();
+            std::wstring prev = cfg::Str(L"Backup", L"Wallpaper");
+            if (!prev.empty() && GetFileAttributesW(prev.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                RowButton(L"Papel de parede que eu tinha antes", PathFindFileNameW(prev.c_str()), L"Voltar")) {
+                install::ApplyWallpaperFile(prev);
+                cfg::SetInt(L"Screen", L"WallpaperPreset", -1);
+                NotifyShell(RL_WALLPAPER);
+            }
             bool keep = cfg::Int(L"Screen", L"Enforce", 1) != 0;
             if (RowToggle(L"Impedir que o Windows troque o papel de parede", L"Desliga o \"Windows Spotlight\" se ele voltar sozinho", keep)) cfg::SetInt(L"Screen", L"Enforce", keep);
         });
+        if (!wallMsg_.empty()) Note(y, wallMsg_);
         Note(y, L"Os papéis de parede do WinMac são desenhados pelo próprio app, no tamanho exato da sua tela.");
     }
 
@@ -697,8 +826,13 @@ protected:
         Group(y, [&] {
             bool tl = cfg::Int(L"Windows", L"TrafficLights", 1) != 0;
             if (RowToggle(L"Botões estilo Mac", L"Fechar, minimizar e ampliar em vermelho, amarelo e verde", tl)) { cfg::SetInt(L"Windows", L"TrafficLights", tl); Notify(RL_WINDOWS, true); }
-            bool an = cfg::Int(L"Effects", L"OpenClose", 1) != 0;
-            if (RowToggle(L"Animação ao abrir e fechar janelas", L"", an)) { cfg::SetInt(L"Effects", L"OpenClose", an); Notify(RL_WINDOWS, true); }
+            ANIMATIONINFO ai{ sizeof(ai) };
+            SystemParametersInfoW(SPI_GETANIMATION, sizeof(ai), &ai, 0);
+            bool an = ai.iMinAnimate != 0;
+            if (RowToggle(L"Animações ao minimizar e maximizar", L"As animações suaves do próprio Windows", an)) {
+                ai.iMinAnimate = an;
+                SystemParametersInfoW(SPI_SETANIMATION, sizeof(ai), &ai, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+            }
         });
         Caption(y, L"ALT+TAB");
         Group(y, [&] {
@@ -768,6 +902,22 @@ protected:
     void DisableAdsNow() { install::DisableAds(); }
 
     void PageSom(float& y) {
+        Caption(y, L"SAÍDA DE SOM");
+        Group(y, [&] {
+            if (outs_.empty()) { RowInfo(L"Saída", L"Nenhum dispositivo de som"); return; }
+            for (auto& d : outs_) {
+                float t;
+                if (!RowCustom(40 * s, &t)) continue;
+                if (Row(Id(), D2D1::RectF(L_ + 4 * s, t + 2 * s, R_ - 4 * s, t + 38 * s)) && !d.isDefault) {
+                    sysx::SetDefaultOutput(d.id);
+                    outs_ = sysx::OutputDevices();
+                    vol_ = sys::GetVolume(&muted_);
+                }
+                gfx::Glyph(c, L"\xE7F5", 14 * s, D2D1::RectF(L_ + 12 * s, t, L_ + 36 * s, t + 40 * s), th.sub);
+                Label(d.name, 13, D2D1::RectF(L_ + 42 * s, t, R_ - 40 * s, t + 40 * s), th.text, d.isDefault ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_REGULAR);
+                if (d.isDefault) gfx::Glyph(c, L"\xE73E", 13 * s, D2D1::RectF(R_ - 40 * s, t, R_ - 14 * s, t + 40 * s), th.accent);
+            }
+        });
         Group(y, [&] {
             float v = muted_ ? 0 : vol_;
             if (RowSlider(L"Volume", v, std::to_wstring((int)std::round(v * 100)) + L"%")) {
@@ -777,19 +927,178 @@ protected:
             }
             bool m = muted_;
             if (RowToggle(L"Sem som", L"", m)) { muted_ = m; sys::SetMute(m); }
+        });
+        if (LinkButton(Id(), D2D1::RectF(L_ + 4 * s, y - 6 * s, R_, y + 18 * s), L"Mais opções de som do Windows…")) OpenPath(L"ms-settings:sound");
+        y += 26 * s;
+    }
+
+    void PageTela(float& y) {
+        Group(y, [&] {
             if (bright_ >= 0) {
                 float b = bright_ / 100.f;
-                if (RowSlider(L"Brilho da tela", b, std::to_wstring((int)std::round(b * 100)) + L"%")) {
+                if (RowSlider(L"Brilho", b, std::to_wstring((int)std::round(b * 100)) + L"%")) {
                     bright_ = b * 100;
                     static DWORD last = 0;
                     if (GetTickCount() - last > 80 || !MouseDown()) { sys::SetBrightness((int)bright_); last = GetTickCount(); }
                 }
-            } else RowInfo(L"Brilho da tela", L"Ajuste no monitor");
+            } else RowInfo(L"Brilho", L"Ajuste nos botões do monitor");
+            RowInfo(L"Resolução", sysx::Resolution());
         });
         Group(y, [&] {
-            if (RowButton(L"Som do Windows", L"Saída, entrada e dispositivos", L"Abrir…")) OpenPath(L"ms-settings:sound");
-            if (RowButton(L"Tela do Windows", L"Resolução, escala e luz noturna", L"Abrir…")) OpenPath(L"ms-settings:display");
+            int theme = cfg::Int(L"Appearance", L"Theme", gfx::DarkMode() ? 1 : 0);
+            if (RowSegment(L"Aparência", { L"Claro", L"Escuro", L"Automático" }, theme)) { install::ApplyTheme(theme); Notify(RL_THEME, true); }
         });
+        if (LinkButton(Id(), D2D1::RectF(L_ + 4 * s, y - 6 * s, R_, y + 18 * s), L"Resolução, escala e luz noturna do Windows…")) OpenPath(L"ms-settings:display");
+        y += 26 * s;
+    }
+
+    void PageNotif(float& y) {
+        Group(y, [&] {
+            bool on = sysx::ToastsEnabled();
+            if (RowToggle(L"Notificações dos apps", on ? L"Ligadas" : L"Não Perturbe: nenhum app mostra avisos", on)) sysx::SetToasts(on);
+            const wchar_t* cdm = L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager";
+            bool tips = sysx::GetDword(HKEY_CURRENT_USER, cdm, L"SubscribedContent-338389Enabled", 1) != 0;
+            if (RowToggle(L"Dicas e sugestões do Windows", L"Desligue para menos avisos e propaganda", tips)) {
+                sysx::SetDword(HKEY_CURRENT_USER, cdm, L"SubscribedContent-338389Enabled", tips);
+                sysx::SetDword(HKEY_CURRENT_USER, cdm, L"SoftLandingEnabled", tips);
+                sysx::SetDword(HKEY_CURRENT_USER, cdm, L"SystemPaneSuggestionsEnabled", tips);
+            }
+            bool upd = cfg::Int(L"Update", L"Auto", 1) != 0;
+            if (RowToggle(L"Avisos de atualização do WinMac", L"", upd)) cfg::SetInt(L"Update", L"Auto", upd);
+        });
+        Note(y, L"\"Não Perturbe\" também fica na Central de Controle, no canto direito da barra de menus.");
+    }
+
+    void PageEnergia(float& y) {
+        auto& pw = power_;
+        float h = 92 * s;
+        auto rr = gfx::RR(L_, y, R_, y + h, 12 * s);
+        gfx::Fill(c, rr, th.group);
+        gfx::Stroke(c, rr, th.groupStroke, 1.f);
+        if (pw.hasBattery) {
+            Label(std::to_wstring(pw.pct) + L"%", 30, D2D1::RectF(L_ + 18 * s, y + 8 * s, L_ + 160 * s, y + 52 * s), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            std::wstring st = pw.charging ? L"Carregando" : pw.plugged ? L"Na tomada" : L"Na bateria";
+            if (!pw.plugged && pw.secondsLeft > 0) st += L" · " + std::to_wstring(pw.secondsLeft / 3600) + L" h " + std::to_wstring((pw.secondsLeft / 60) % 60) + L" min restantes";
+            if (pw.saver) st += L" · Economia ligada";
+            Label(st, 12.5f, D2D1::RectF(L_ + 160 * s, y + 18 * s, R_ - 18 * s, y + 42 * s), th.sub);
+            D2D1_RECT_F bar = D2D1::RectF(L_ + 18 * s, y + 60 * s, R_ - 18 * s, y + 70 * s);
+            gfx::Fill(c, gfx::RR(bar.left, bar.top, bar.right, bar.bottom, 5 * s), th.dark ? gfx::White(0.12f) : gfx::Black(0.08f));
+            float fx = bar.left + (bar.right - bar.left) * pw.pct / 100.f;
+            gfx::Fill(c, gfx::RR(bar.left, bar.top, std::max(fx, bar.left + 10 * s), bar.bottom, 5 * s), pw.pct <= 20 && !pw.charging ? gfx::Rgba(255, 69, 58) : gfx::Rgba(52, 199, 89));
+        } else {
+            Label(L"Na tomada", 20, D2D1::RectF(L_ + 18 * s, y + 14 * s, R_, y + 46 * s), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            Label(L"Este computador não usa bateria.", 12.5f, D2D1::RectF(L_ + 18 * s, y + 48 * s, R_, y + 72 * s), th.sub);
+        }
+        y += h + 18 * s;
+        Group(y, [&] {
+            int mode = sysx::PowerMode();
+            if (RowSegment(L"Modo de energia", { L"Economia", L"Equilibrado", L"Desempenho" }, mode)) sysx::SetPowerMode(mode);
+            if (pw.hasBattery) {
+                bool sv = sysx::SaverThreshold() >= 100;
+                if (RowToggle(L"Economia de bateria sempre que estiver na bateria", L"Menos brilho e atividade em segundo plano", sv)) {
+                    if (sv) { cfg::SetInt(L"Power", L"SaverPrev", std::max(5, sysx::SaverThreshold())); sysx::SetSaverThreshold(100); }
+                    else sysx::SetSaverThreshold(cfg::Int(L"Power", L"SaverPrev", 20) >= 100 ? 20 : cfg::Int(L"Power", L"SaverPrev", 20));
+                    power_ = sysx::GetPower();
+                }
+                int thr = sysx::SaverThreshold();
+                int sel = thr <= 10 ? 0 : thr <= 20 ? 1 : thr <= 30 ? 2 : 3;
+                if (thr < 100 && RowSegment(L"Ligar a economia sozinha em", { L"10%", L"20%", L"30%", L"50%" }, sel)) {
+                    const int v[] = { 10, 20, 30, 50 };
+                    sysx::SetSaverThreshold(v[sel]);
+                }
+            }
+        });
+        static const int offs[] = { 2, 5, 10, 15, 0 }, sleeps[] = { 5, 15, 30, 60, 0 };
+        auto idx = [](const int* arr, int v) { for (int i = 0; i < 5; ++i) if (arr[i] == v) return i; return v == 0 ? 4 : 1; };
+        Caption(y, pw.hasBattery ? L"NA BATERIA" : L"TELA E SUSPENSÃO");
+        auto block = [&](bool ac) {
+            Group(y, [&] {
+                int a = idx(offs, sysx::ScreenOffMinutes(ac));
+                if (RowSegment(L"Desligar a tela depois de", { L"2 min", L"5 min", L"10 min", L"15 min", L"Nunca" }, a)) sysx::SetScreenOffMinutes(ac, offs[a]);
+                int b = idx(sleeps, sysx::SleepMinutes(ac));
+                if (RowSegment(L"Suspender depois de", { L"5 min", L"15 min", L"30 min", L"1 h", L"Nunca" }, b)) sysx::SetSleepMinutes(ac, sleeps[b]);
+            });
+        };
+        if (pw.hasBattery) {
+            block(false);
+            Caption(y, L"NA TOMADA");
+        }
+        block(true);
+    }
+
+    void PageMouse(float& y) {
+        Caption(y, L"MOUSE E TRACKPAD");
+        Group(y, [&] {
+            float sp = (sysx::MouseSpeed() - 1) / 19.f;
+            if (RowSlider(L"Velocidade do ponteiro", sp, std::to_wstring(1 + (int)std::round(sp * 19)))) sysx::SetMouseSpeed(1 + (int)std::round(sp * 19));
+            int wl = sysx::WheelLines();
+            int sel = wl <= 1 ? 0 : wl <= 3 ? 1 : wl <= 5 ? 2 : 3;
+            if (RowSegment(L"Linhas por giro da rodinha", { L"1", L"3", L"5", L"8" }, sel)) {
+                const int v[] = { 1, 3, 5, 8 };
+                sysx::SetWheelLines(v[sel]);
+            }
+            int dc = sysx::DoubleClickMs();
+            int ds = dc <= 380 ? 0 : dc <= 600 ? 1 : 2;
+            if (RowSegment(L"Velocidade do clique duplo", { L"Rápido", L"Normal", L"Devagar" }, ds)) {
+                const int v[] = { 320, 500, 700 };
+                sysx::SetDoubleClickMs(v[ds]);
+            }
+            bool sw = sysx::ButtonsSwapped();
+            if (RowToggle(L"Modo canhoto", L"Troca os botões esquerdo e direito", sw)) sysx::SetButtonsSwapped(sw);
+        });
+        Caption(y, L"ATALHOS DO WINMAC");
+        Group(y, [&] {
+            RowInfo(L"Trocar de janela", L"Alt + Tab");
+            RowInfo(L"Fechar janela no Alt+Tab", L"Alt + Tab, depois Q");
+            RowInfo(L"Abrir a busca de apps", L"Lupa na barra de menus");
+            RowInfo(L"Emoji e símbolos", L"Win + .");
+        });
+    }
+
+    void PageArmaz(float& y) {
+        for (auto& d : drives_) {
+            float h = 78 * s;
+            auto rr = gfx::RR(L_, y, R_, y + h, 12 * s);
+            gfx::Fill(c, rr, th.group);
+            gfx::Stroke(c, rr, th.groupStroke, 1.f);
+            Label(d.label + L" (" + d.root.substr(0, 2) + L")", 13.5f, D2D1::RectF(L_ + 16 * s, y + 10 * s, R_ - 16 * s, y + 32 * s), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            Label(sysx::Bytes(d.free) + L" livres de " + sysx::Bytes(d.total), 12, D2D1::RectF(L_ + 16 * s, y + 10 * s, R_ - 16 * s, y + 32 * s), th.sub,
+                  DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            D2D1_RECT_F bar = D2D1::RectF(L_ + 16 * s, y + 44 * s, R_ - 16 * s, y + 56 * s);
+            gfx::Fill(c, gfx::RR(bar.left, bar.top, bar.right, bar.bottom, 6 * s), th.dark ? gfx::White(0.12f) : gfx::Black(0.08f));
+            float used = d.total ? (float)((double)(d.total - d.free) / d.total) : 0;
+            gfx::Fill(c, gfx::RR(bar.left, bar.top, bar.left + (bar.right - bar.left) * used, bar.bottom, 6 * s), used > 0.9f ? gfx::Rgba(255, 69, 58) : th.accent);
+            y += h + 12 * s;
+        }
+        y += 6 * s;
+        Group(y, [&] {
+            RowInfo(L"Espaço usado pelo WinMac", sysx::Bytes(winmacSize_));
+            if (RowButton(L"Limpar arquivos temporários", L"Apaga o que os apps deixaram na pasta temporária há mais de um dia", cleaning_ ? L"Limpando…" : L"Limpar", false, !cleaning_)) {
+                cleaning_ = true;
+                auto freed = std::make_shared<uint64_t>(0);
+                Async([freed]() { *freed = sysx::CleanTemp(); }, [this, freed]() {
+                    cleaning_ = false;
+                    storageMsg_ = L"Pronto! " + sysx::Bytes(*freed) + L" liberados.";
+                    drives_ = sysx::Drives();
+                    Invalidate();
+                });
+            }
+            if (RowButton(L"Esvaziar a Lixeira", L"", L"Esvaziar…")) {
+                SHEmptyRecycleBinW(Hwnd(), nullptr, 0);
+                drives_ = sysx::Drives();
+            }
+            if (macdeskSize_ && RowButton(L"Apagar sobras do MacDesk antigo", sysx::Bytes(macdeskSize_) + L" que não são mais usados", L"Apagar")) {
+                std::wstring d = MacDeskDir() + std::wstring(1, L'\0') + std::wstring(1, L'\0');
+                SHFILEOPSTRUCTW op{};
+                op.wFunc = FO_DELETE;
+                op.pFrom = d.c_str();
+                op.fFlags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_ALLOWUNDO;
+                SHFileOperationW(&op);
+                macdeskSize_ = 0;
+                storageMsg_ = L"Sobras do MacDesk enviadas para a Lixeira.";
+            }
+        });
+        if (!storageMsg_.empty()) Note(y, storageMsg_);
     }
 
     void PageSobre(float& y, D2D1_RECT_F view) {
@@ -811,6 +1120,9 @@ protected:
         if (Button(Id(), D2D1::RectF(cx - bw - 6 * s, y, cx - 6 * s, y + 30 * s), L"Projeto no GitHub", true)) OpenPath(L"https://github.com/" WINMAC_REPO);
         if (Button(Id(), D2D1::RectF(cx + 6 * s, y, cx + bw + 6 * s, y + 30 * s), L"Licenças")) OpenPath(L"https://github.com/" WINMAC_REPO L"/blob/main/THIRD-PARTY.md");
         y += 50 * s;
+        if (Danger(Id(), D2D1::RectF(cx - 90 * s, y - 8 * s, cx + 90 * s, y + 22 * s), L"Desinstalar o WinMac…"))
+            ShellExecuteW(nullptr, L"open", install::IsInstalled() ? install::InstalledExe().c_str() : SelfPath().c_str(), L"--uninstall", nullptr, SW_SHOWNORMAL);
+        y += 42 * s;
         Label(L"Feito com 💙 por dhqdev · Código aberto (MIT)", 12, D2D1::RectF(L_, y, R_, y + 20 * s), th.faint, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_CENTER);
         y += 30 * s;
         (void)view;
@@ -819,6 +1131,7 @@ protected:
     void OnTimer(UINT_PTR id) override {
         if (id == T_REFRESH) {
             if (page_ == PWifi && wifi_.Refresh()) Invalidate();
+            if (page_ == PEnergia) { power_ = sysx::GetPower(); Invalidate(); }
         } else if (id == T_ANIMPAGE) {
             if (page_ == PSobre) Invalidate();
         } else if (id == 99) {
@@ -880,7 +1193,7 @@ int Run(const std::wstring& pageKey) {
     }
     SetCurrentProcessExplicitAppUserModelID(L"WinMac.Ajustes");
     Ajustes a;
-    if (!a.Create(L"Ajustes do Sistema", 880, 600, true)) return 1;
+    if (!a.Create(L"Ajustes do Sistema", 900, 640, true)) return 1;
     a.page_ = p;
     a.focusPage();
     a.Start();
@@ -897,7 +1210,7 @@ int Run(const std::wstring& pageKey) {
 void RenderPreview(const std::wstring& pageKey, const std::wstring& png) {
     Ajustes a;
     a.quitOnClose = false;
-    if (!a.Create(L"Ajustes (prévia)", 880, 600, false)) return;
+    if (!a.Create(L"Ajustes (prévia)", 900, 640, false)) return;
     a.page_ = PageOf(pageKey);
     a.focusPage();
     a.SaveFrame(png);

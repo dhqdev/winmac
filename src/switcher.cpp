@@ -7,7 +7,7 @@
 namespace switcher {
 namespace {
 enum { SW_START = 1, SW_NEXT, SW_PREV, SW_CANCEL, SW_COMMIT, SW_CLOSESEL };
-enum { T_SHOW = 1 };
+enum { T_SHOW = 1, T_ANIM = 2 };
 const wchar_t* kCls = L"WinMac.Switcher";
 
 struct Entry {
@@ -28,6 +28,10 @@ bool g_switching = false, g_shown = false, g_eatAltUp = false, g_previews = true
 float g_s = 1;
 int g_x = 0, g_y = 0, g_w = 0, g_h = 0;
 std::map<std::wstring, ComPtr<IWICBitmapSource>> g_icons;
+DWORD g_showStart = 0, g_lastFrame = 0;
+D2D1_RECT_F g_hl{};          // destaque da seleção (desliza entre os cartões)
+bool g_hlInit = false, g_thumbsOn = false;
+void RegisterThumbs();
 
 ComPtr<IWICBitmapSource> IconFor(HWND h) {
     const auto& w = apps::Describe(h);
@@ -110,8 +114,9 @@ void Paint(ID2D1DeviceContext* c, Surface* surf, bool forFile) {
         auto& e = g_items[i];
         if (e.card.left < 0) continue;
         bool sel = i == g_sel;
-        auto cr = gfx::RR(e.card.left, e.card.top, e.card.right, e.card.bottom, 14 * s);
         if (sel) {
+            D2D1_RECT_F h = forFile || !g_hlInit ? e.card : g_hl;
+            auto cr = gfx::RR(h.left, h.top, h.right, h.bottom, 14 * s);
             gfx::Fill(c, cr, dark ? gfx::White(0.16f) : gfx::White(0.55f));
             gfx::Stroke(c, cr, gfx::Accent(), 2.f * s);
         }
@@ -148,12 +153,40 @@ void Paint(ID2D1DeviceContext* c, Surface* surf, bool forFile) {
     (void)sub;
 }
 
+bool Animating() {
+    if (GetTickCount() - g_showStart < 200) return true;
+    if (g_sel < 0 || g_sel >= (int)g_items.size()) return false;
+    auto& t = g_items[g_sel].card;
+    return std::fabs(g_hl.left - t.left) > 0.5f || std::fabs(g_hl.top - t.top) > 0.5f;
+}
+
 void Render() {
     if (!g_wnd) return;
+    DWORD now = GetTickCount();
+    float dt = std::min(0.05f, (now - g_lastFrame) / 1000.f);
+    g_lastFrame = now;
+    if (g_sel >= 0 && g_sel < (int)g_items.size()) {
+        auto t = g_items[g_sel].card;
+        if (!g_hlInit) { g_hl = t; g_hlInit = true; }
+        float k = 1.f - std::exp(-dt / 0.045f);
+        g_hl.left += (t.left - g_hl.left) * k;
+        g_hl.top += (t.top - g_hl.top) * k;
+        g_hl.right += (t.right - g_hl.right) * k;
+        g_hl.bottom += (t.bottom - g_hl.bottom) * k;
+    }
     auto* c = g_surf.Begin(g_w, g_h);
     if (!c) return;
+    float pt = Clamp01((now - g_showStart) / 190.f), pu = pt - 1.f;
+    float sc = 0.93f + 0.07f * (1.f + 2.2f * pu * pu * pu + 1.2f * pu * pu);
+    c->SetTransform(D2D1::Matrix3x2F::Scale(sc, sc, D2D1::Point2F(g_w / 2.f, g_h / 2.f)));
     Paint(c, &g_surf, false);
-    g_surf.End(g_x, g_y);
+    c->SetTransform(D2D1::Matrix3x2F::Identity());
+    g_surf.End(g_x, g_y, (BYTE)(255 * Clamp01(pt * 2.5f)));
+    if (Animating()) SetTimer(g_wnd, T_ANIM, 10, nullptr);
+    else {
+        KillTimer(g_wnd, T_ANIM);
+        if (!g_thumbsOn && g_shown) RegisterThumbs();
+    }
 }
 
 void PlaceThumbs() {
@@ -175,23 +208,31 @@ void PlaceThumbs() {
     }
 }
 
+// as prévias ao vivo entram depois do "pop" (o DWM não acompanha a escala da animação)
+void RegisterThumbs() {
+    g_thumbsOn = true;
+    if (!g_previews) return;
+    for (auto& e : g_items)
+        if (!e.iconic && e.card.left >= 0 && !e.thumb) DwmRegisterThumbnail(g_wnd, e.hwnd, &e.thumb);
+    PlaceThumbs();
+    Render();
+}
+
 void Show() {
     if (g_shown || g_items.empty()) return;
     g_shown = true;
+    g_thumbsOn = false;
+    g_hlInit = false;
+    g_showStart = g_lastFrame = GetTickCount();
     Layout();
     Render();
     gfx::SetRoundRegion(g_wnd, 0, 0, g_w, g_h, (int)(22 * g_s));
     SetWindowPos(g_wnd, HWND_TOPMOST, g_x, g_y, g_w, g_h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    if (g_previews) {
-        for (auto& e : g_items)
-            if (!e.iconic && e.card.left >= 0 && SUCCEEDED(DwmRegisterThumbnail(g_wnd, e.hwnd, &e.thumb))) {}
-        PlaceThumbs();
-        Render();
-    }
 }
 
 void Hide() {
     KillTimer(g_wnd, T_SHOW);
+    KillTimer(g_wnd, T_ANIM);
     Unthumb();
     if (g_shown) ShowWindow(g_wnd, SW_HIDE);
     g_shown = false;
@@ -294,6 +335,7 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_TIMER:
         if (w == T_SHOW) { KillTimer(h, T_SHOW); if (g_switching) Show(); }
+        else if (w == T_ANIM) { if (g_shown) Render(); else KillTimer(h, T_ANIM); }
         return 0;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;

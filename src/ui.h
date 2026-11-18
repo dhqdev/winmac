@@ -17,7 +17,8 @@ public:
     // lw/lh em unidades lógicas (96 dpi). appWindow = aparece no Dock e no Alt+Tab.
     bool Create(const std::wstring& title, float lw, float lh, bool appWindow, bool topmost = false);
     void Show();
-    void Close();
+    void Close();                 // fecha com animação (encolhe e some)
+    void CloseNow();
     void Invalidate();
     void Repaint();
     void Resize(float lw, float lh);
@@ -101,5 +102,9 @@ private:
     D2D1_RECT_F clip_{ -1e6f, -1e6f, 1e6f, 1e6f };
     float dy_ = 0;
     std::map<int, float*> scrollTargets_;
+    DWORD openStart_ = 0, closeStart_ = 0;
+    bool closing_ = false;
+    ComPtr<IWICBitmap> bg_;
+    std::wstring bgKey_;
 };
 }  // namespace ui

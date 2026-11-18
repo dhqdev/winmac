@@ -13,6 +13,8 @@ struct MenuState {
     int x = 0, y = 0, w = 0, h = 0;
     float scW = 0;
     int fade = 0;
+    DWORD start = 0;
+    float ax = 0, ay = 0;   // ponto de onde o menu "nasce"
     Surface surf;
     std::function<bool(POINT)> outside;
 };
@@ -20,11 +22,17 @@ MenuState* g_menu = nullptr;
 const wchar_t* kCls = L"WinMac.Popup";
 const int kFadeSteps = 6;
 
+float PopT(MenuState& m) { return Clamp01((GetTickCount() - m.start) / 160.f); }
+
 void Render(MenuState& m) {
     auto* c = m.surf.Begin(m.w, m.h);
     if (!c) return;
     bool dark = gfx::DarkMode();
     float s = m.s;
+    float t = PopT(m), u = t - 1.f;
+    float e = 1.f + 2.2f * u * u * u + 1.2f * u * u;   // mola leve
+    float sc = 0.93f + 0.07f * e;
+    c->SetTransform(D2D1::Matrix3x2F::Scale(sc, sc, D2D1::Point2F(m.ax, m.ay)));
     auto rr = gfx::RR(0, 0, (float)m.w, (float)m.h, 11 * s);
     gfx::Fill(c, rr, gfx::Panel(dark, 0.72f, 0.80f));
     gfx::GlassOverlay(c, rr, dark, 0.55f);
@@ -51,7 +59,8 @@ void Render(MenuState& m) {
             gfx::Text(c, it.shortcut, f, D2D1::RectF(tx, r.top, r.right - 16 * s, r.bottom), sc, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
     }
-    int a = std::min(255, 255 * (m.fade + 1) / kFadeSteps);
+    c->SetTransform(D2D1::Matrix3x2F::Identity());
+    int a = (int)(255 * Clamp01(PopT(m) * 2.6f));
     m.surf.End(m.x, m.y, (BYTE)a);
 }
 
@@ -124,12 +133,8 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(wp) == WA_INACTIVE) m->done = true;
         return 0;
     case WM_TIMER:
-        if (m->fade < kFadeSteps - 1) {
-            m->fade++;
-            m->surf.SetAlpha(m->x, m->y, (BYTE)std::min(255, 255 * (m->fade + 1) / kFadeSteps));
-        } else {
-            KillTimer(h, 1);
-        }
+        Render(*m);
+        if (PopT(*m) >= 1.f) KillTimer(h, 1);
         return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
@@ -183,6 +188,9 @@ int PopupMenu(const std::vector<PMItem>& items, int x, int y, std::function<bool
     m.x = std::max((int)mi.rcMonitor.left + 4, std::min(x, (int)mi.rcMonitor.right - m.w - 4));
     m.y = std::max((int)mi.rcMonitor.top + 2, std::min(y, (int)mi.rcMonitor.bottom - m.h - 4));
 
+    m.start = GetTickCount();
+    m.ax = anchorBottom ? m.w / 2.f : 12 * s;
+    m.ay = anchorBottom ? (float)m.h : 0.f;
     m.hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kCls, L"", WS_POPUP, m.x, m.y, m.w, m.h,
                              nullptr, nullptr, g_inst, nullptr);
     if (!m.hwnd) return 0;
@@ -195,7 +203,7 @@ int PopupMenu(const std::vector<PMItem>& items, int x, int y, std::function<bool
     SetForegroundWindow(m.hwnd);
     SetFocus(m.hwnd);
     SetCapture(m.hwnd);
-    SetTimer(m.hwnd, 1, 12, nullptr);
+    SetTimer(m.hwnd, 1, 10, nullptr);
     MSG msg;
     while (!m.done) {
         BOOL r = GetMessageW(&msg, nullptr, 0, 0);
