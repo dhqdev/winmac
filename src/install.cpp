@@ -6,6 +6,7 @@
 #include "gfx.h"
 #include "sys.h"
 #include "sysx.h"
+#include "net.h"
 #include <tlhelp32.h>
 #include <appmodel.h>
 
@@ -349,6 +350,38 @@ bool ApplyWallpaper(int preset) {
     return ApplyWallpaperFile(path);
 }
 
+bool ApplyPhotoOfDay(bool force) {
+    int st = 0;
+    std::string body = net::Get(L"https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=pt-BR", &st);
+    net::JVal j;
+    if (st != 200 || !net::ParseJson(body, j)) return false;
+    auto* imgs = j.Get("images");
+    if (!imgs || imgs->a.empty()) return false;
+    auto& im = imgs->a[0];
+    std::wstring date = im.Get("startdate") ? im.Get("startdate")->W() : L"";
+    std::wstring base = im.Get("urlbase") ? im.Get("urlbase")->W() : L"";
+    if (base.empty() || base.find(L"..") != std::wstring::npos) return false;
+    if (!force && date == cfg::Str(L"Screen", L"PhotoDate") && GetFileAttributesW(cfg::Str(L"Screen", L"Wallpaper").c_str()) != INVALID_FILE_ATTRIBUTES) return true;
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    std::wstring res = sw > 1920 ? L"_UHD.jpg" : L"_1920x1080.jpg";
+    std::wstring file = Dir() + L"\\foto-do-dia-" + date + L".jpg";
+    if (!net::Download(L"https://www.bing.com" + base + res, file, nullptr)) return false;
+    WIN32_FIND_DATAW fd;
+    HANDLE fh = FindFirstFileW((Dir() + L"\\foto-do-dia-*.jpg").c_str(), &fd);
+    if (fh != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring f = Dir() + L"\\" + fd.cFileName;
+            if (_wcsicmp(f.c_str(), file.c_str()) != 0) DeleteFileW(f.c_str());
+        } while (FindNextFileW(fh, &fd));
+        FindClose(fh);
+    }
+    cfg::Set(L"Screen", L"PhotoDate", date);
+    cfg::Set(L"Screen", L"PhotoTitle", im.Get("title") ? im.Get("title")->W() : L"");
+    cfg::Set(L"Screen", L"PhotoCopyright", im.Get("copyright") ? im.Get("copyright")->W() : L"");
+    cfg::SetInt(L"Screen", L"WallpaperPreset", -2);
+    return ApplyWallpaperFile(file);
+}
+
 void ApplyTheme(int theme) {
     cfg::SetInt(L"Appearance", L"Theme", theme);
     bool dark = theme == 1;
@@ -418,6 +451,11 @@ bool RemovePackages(const std::vector<std::wstring>& families) {
 }
 
 void Migrate() {
+    // 1.2.0: os botões das janelas voltam a ser os do próprio Windows (pedido dos usuários)
+    if (!cfg::Int(L"State", L"Mig120", 0)) {
+        cfg::SetInt(L"Windows", L"TrafficLights", 0);
+        cfg::SetInt(L"State", L"Mig120", 1);
+    }
     // versões futuras: ajustes de configuração entre versões entram aqui
     if (cfg::Str(L"State", L"ConfigVersion") != WINMAC_VERSION) cfg::Set(L"State", L"ConfigVersion", WINMAC_VERSION);
 }

@@ -583,7 +583,7 @@ void Init() {
 }
 
 void Reload() {
-    bool on = cfg::Int(L"Windows", L"TrafficLights", 1) != 0;
+    bool on = cfg::Int(L"Windows", L"TrafficLights", 0) != 0;
     g_exclude = cfg::List(L"Windows", L"TrafficExclude");
     if (on && !g_on) {
         g_on = true;

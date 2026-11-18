@@ -6,24 +6,27 @@
 #include "install.h"
 #include "update.h"
 #include "net.h"
+#include "wifi.h"
 #include "sys.h"
 #include "version.h"
 #include "sysx.h"
+#include "cleaner.h"
 #include <shobjidl.h>
 
 namespace settings {
 namespace {
-enum Page { PWifi, PBluetooth, PGeral, PUpdate, PAparencia, PPapel, PDock, PBarra, PJanelas, PNotif, PSom, PTela, PEnergia, PMouse,
-            PArmaz, PArquivos, PApps, PSobre, PCount };
+enum Page { PWifi, PBluetooth, PRede, PGeral, PUpdate, PAparencia, PPapel, PDock, PBarra, PJanelas, PNotif, PSom, PTela, PEnergia, PMouse,
+            PData, PPrint, PPriv, PSeg, PStartup, PArmaz, PArquivos, PApps, PSobre, PCount };
 struct PageInfo { const wchar_t* key; const wchar_t* title; const wchar_t* glyph; int r, g, b; };
 const PageInfo kPages[PCount] = {
     { L"wifi", L"Wi-Fi", L"\xE701", 10, 132, 255 },
     { L"bluetooth", L"Bluetooth", L"\xE702", 10, 132, 255 },
+    { L"rede", L"Rede", L"\xE774", 10, 132, 255 },
     { L"geral", L"Geral", L"\xE713", 142, 142, 147 },
     { L"update", L"Atualização de Software", L"\xE895", 52, 120, 246 },
     { L"aparencia", L"Aparência", L"\xE771", 40, 40, 44 },
     { L"papel", L"Papel de Parede", L"\xE8B9", 40, 180, 230 },
-    { L"dock", L"Mesa e Dock", L"\xE71D", 40, 40, 44 },
+    { L"dock", L"Mesa, Widgets e Dock", L"\xE71D", 40, 40, 44 },
     { L"barra", L"Barra de Menus", L"\xE700", 40, 40, 44 },
     { L"janelas", L"Janelas e Alt+Tab", L"\xE7C4", 94, 92, 230 },
     { L"notificacoes", L"Notificações", L"\xE7E7", 255, 69, 58 },
@@ -31,12 +34,17 @@ const PageInfo kPages[PCount] = {
     { L"tela", L"Tela", L"\xE7F4", 10, 132, 255 },
     { L"energia", L"Bateria e Energia", L"\xE83F", 48, 190, 90 },
     { L"mouse", L"Mouse e Teclado", L"\xE962", 120, 120, 128 },
-    { L"armazenamento", L"Armazenamento", L"\xEDA2", 120, 120, 128 },
+    { L"data", L"Data e Hora", L"\xE787", 255, 149, 0 },
+    { L"impressoras", L"Impressoras", L"\xE749", 120, 120, 128 },
+    { L"privacidade", L"Privacidade", L"\xE72E", 52, 120, 246 },
+    { L"seguranca", L"Segurança", L"\xE83D", 48, 190, 90 },
+    { L"inicializacao", L"Apps ao Iniciar", L"\xE7E8", 255, 149, 0 },
+    { L"armazenamento", L"Armazenamento e Limpeza", L"\xEDA2", 120, 120, 128 },
     { L"arquivos", L"Arquivos (Explorador)", L"\xE8B7", 52, 150, 230 },
-    { L"apps", L"Apps e Limpeza", L"\xE74D", 255, 69, 58 },
+    { L"apps", L"Remover Apps Pagos", L"\xE74D", 255, 69, 58 },
     { L"sobre", L"Sobre o WinMac", L"\xE946", 142, 142, 147 },
 };
-const int kGroups[] = { PBluetooth, PUpdate, PJanelas, PMouse, PApps };   // espaço depois destes
+const int kGroups[] = { PRede, PUpdate, PJanelas, PPrint, PStartup, PApps };   // espaço depois destes
 const UINT WM_GOTO = WM_APP + 40;
 enum { T_REFRESH = 10, T_ANIMPAGE = 11 };
 
@@ -87,7 +95,16 @@ public:
         }
         if (page_ == PBluetooth || page_ == PWifi) ReadRadio();
         if (page_ == PEnergia) power_ = sysx::GetPower();
+        if (page_ == PRede) adapters_ = sysx::Adapters();
+        if (page_ == PPrint) printers_ = sysx::Printers();
+        if (page_ == PStartup) startup_ = sysx::StartupApps();
+        if (page_ == PSeg && !avLoaded_) {
+            avLoaded_ = true;
+            auto res = std::make_shared<std::vector<sysx::Antivirus>>();
+            Async([res]() { *res = sysx::AntivirusProducts(); }, [this, res]() { av_ = *res; Invalidate(); });
+        }
         if (page_ == PArmaz) {
+            if (clean_.empty()) ScanClean();
             drives_ = sysx::Drives();
             winmacSize_ = sysx::FolderSize(install::Dir());
             macdeskSize_ = MacDeskLeftover() ? sysx::FolderSize(MacDeskDir()) : 0;
@@ -124,6 +141,27 @@ protected:
     uint64_t winmacSize_ = 0, macdeskSize_ = 0;
     bool cleaning_ = false;
     std::wstring storageMsg_;
+    std::vector<cleaner::Item> clean_;
+    std::set<std::wstring> cleanSel_;
+    bool cleanScanning_ = false;
+    std::vector<sysx::Adapter> adapters_;
+    std::vector<sysx::Printer> printers_;
+    std::vector<sysx::Antivirus> av_;
+    bool avLoaded_ = false;
+    std::vector<sysx::StartupApp> startup_;
+    bool photoBusy_ = false;
+    void ScanClean() {
+        if (cleanScanning_) return;
+        cleanScanning_ = true;
+        auto res = std::make_shared<std::vector<cleaner::Item>>();
+        Async([res]() { *res = cleaner::Scan(); }, [this, res]() {
+            clean_ = *res;
+            cleanSel_.clear();
+            for (auto& it : clean_) if (!it.recycle) cleanSel_.insert(it.id);
+            cleanScanning_ = false;
+            Invalidate();
+        });
+    }
 
     static std::wstring MacDeskDir() {
         wchar_t b[MAX_PATH];
@@ -452,6 +490,12 @@ protected:
         case PEnergia: PageEnergia(y); break;
         case PMouse: PageMouse(y); break;
         case PArmaz: PageArmaz(y); break;
+        case PRede: PageRede(y); break;
+        case PData: PageData(y); break;
+        case PPrint: PagePrint(y); break;
+        case PPriv: PagePriv(y); break;
+        case PSeg: PageSeg(y); break;
+        case PStartup: PageStartup(y); break;
         case PSobre: PageSobre(y, view); break;
         default: break;
         }
@@ -711,16 +755,19 @@ protected:
         }
         y += ((int)ws.size() + per - 1) / per * (thh + 34 * s) + 8 * s;
         Group(y, [&] {
-            bool spot = cur == -2;
-            if (RowButton(L"Destaque do Windows", spot ? L"Ativo: uma foto nova da Microsoft todo dia" : L"Fotos novas da Microsoft todo dia", spot ? L"Ativo" : L"Usar", !spot, !spot)) {
-                cfg::SetInt(L"Screen", L"Enforce", 0);
-                cfg::SetInt(L"Screen", L"WallpaperPreset", -2);
-                sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\DesktopSpotlight\\Settings", L"EnabledState", 1);
-                sysx::SetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Wallpapers", L"BackgroundType", 3);
-                DWORD_PTR r;
-                SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETDESKWALLPAPER, 0, SMTO_ABORTIFHUNG, 300, &r);
-                wallMsg_ = L"Destaque do Windows ligado. Se a foto não trocar em alguns segundos, escolha \"Destaque do Windows\" na lista \"Tela de fundo\" do Windows.";
-                NotifyShell(RL_WALLPAPER);
+            bool photo = cur == -2;
+            std::wstring pt = cfg::Str(L"Screen", L"PhotoTitle");
+            std::wstring sub = photoBusy_ ? L"Baixando a foto de hoje…" : photo ? (pt.empty() ? L"Ativa: uma foto nova todo dia" : L"Hoje: " + pt) : L"Uma foto linda nova todo dia, como o Destaque do Windows";
+            if (RowButton(L"Foto do dia", sub, photo ? L"Trocar agora" : L"Usar", !photo, !photoBusy_)) {
+                photoBusy_ = true;
+                wallMsg_.clear();
+                auto ok = std::make_shared<bool>(false);
+                Async([ok]() { *ok = install::ApplyPhotoOfDay(true); }, [this, ok]() {
+                    photoBusy_ = false;
+                    wallMsg_ = *ok ? L"Foto do dia aplicada. Ela troca sozinha quando sair a próxima." : L"Não consegui baixar a foto agora. Confira a internet e tente de novo.";
+                    if (*ok) { cfg::SetInt(L"Screen", L"Enforce", 1); NotifyShell(RL_WALLPAPER); }
+                    Invalidate();
+                });
             }
             if (RowButton(L"Usar uma foto sua", L"JPG, PNG ou BMP", L"Escolher…")) PickWallpaperFile();
             std::wstring prev = cfg::Str(L"Backup", L"Wallpaper");
@@ -768,7 +815,19 @@ protected:
         Caption(y, L"MESA");
         Group(y, [&] {
             bool wg = cfg::Int(L"Widgets", L"Enabled", 1) != 0;
-            if (RowToggle(L"Widgets na mesa", L"Data, calendário, relógio e clima", wg)) { cfg::SetInt(L"Widgets", L"Enabled", wg); Notify(RL_WIDGETS, true); }
+            if (RowToggle(L"Widgets na mesa", L"Data, calendário, relógio, clima e sistema", wg)) { cfg::SetInt(L"Widgets", L"Enabled", wg); Notify(RL_WIDGETS, true); }
+            if (wg) {
+                struct WOpt { const wchar_t* key; const wchar_t* label; const wchar_t* sub; };
+                for (auto& o : { WOpt{ L"System", L"Sistema", L"CPU, memória, disco e bateria" }, WOpt{ L"Processes", L"Processos", L"Os apps que mais usam o computador" },
+                                 WOpt{ L"Network", L"Rede", L"Velocidade da internet agora" }, WOpt{ L"Cleaner", L"Limpeza", L"Quanto dá para liberar, com botão de limpar" } }) {
+                    bool v = cfg::Int(L"Widgets", o.key, 1) != 0;
+                    if (RowToggle(o.label, o.sub, v)) { cfg::SetInt(L"Widgets", o.key, v); Notify(RL_WIDGETS, true); }
+                }
+                if (RowButton(L"Organizar widgets", L"Volta todos para o lugar padrão", L"Organizar")) {
+                    for (const wchar_t* k : { L"PosDate", L"PosMonth", L"PosClock", L"PosWeather", L"PosSystem", L"PosProcesses", L"PosNetwork", L"PosCleaner" }) cfg::Set(L"Widgets", k, L"");
+                    Notify(RL_WIDGETS, true);
+                }
+            }
             std::wstring city = cfg::Str(L"Weather", L"City");
             RowInfo(L"Cidade do clima", city.empty() ? L"Não definida" : city);
             float t;
@@ -824,7 +883,7 @@ protected:
     void PageJanelas(float& y) {
         Caption(y, L"BOTÕES DAS JANELAS");
         Group(y, [&] {
-            bool tl = cfg::Int(L"Windows", L"TrafficLights", 1) != 0;
+            bool tl = cfg::Int(L"Windows", L"TrafficLights", 0) != 0;
             if (RowToggle(L"Botões estilo Mac", L"Fechar, minimizar e ampliar em vermelho, amarelo e verde", tl)) { cfg::SetInt(L"Windows", L"TrafficLights", tl); Notify(RL_WINDOWS, true); }
             ANIMATIONINFO ai{ sizeof(ai) };
             SystemParametersInfoW(SPI_GETANIMATION, sizeof(ai), &ai, 0);
@@ -1046,6 +1105,18 @@ protected:
             bool sw = sysx::ButtonsSwapped();
             if (RowToggle(L"Modo canhoto", L"Troca os botões esquerdo e direito", sw)) sysx::SetButtonsSwapped(sw);
         });
+        Caption(y, L"TECLADO");
+        Group(y, [&] {
+            int dl = sysx::KeyboardDelay();
+            int dsel = 3 - dl;
+            if (RowSegment(L"Espera para repetir a tecla", { L"Longa", L"Média", L"Curta", L"Mínima" }, dsel)) sysx::SetKeyboardDelay(3 - dsel);
+            float sp = sysx::KeyboardSpeed() / 31.f;
+            if (RowSlider(L"Velocidade da repetição", sp, std::to_wstring(sysx::KeyboardSpeed()))) sysx::SetKeyboardSpeed((int)std::round(sp * 31));
+            std::wstring lay;
+            for (auto& l : sysx::KeyboardLayouts()) lay += (lay.empty() ? L"" : L", ") + l;
+            RowInfo(L"Teclados", lay);
+            RowInfo(L"Idioma do Windows", sysx::UiLanguage());
+        });
         Caption(y, L"ATALHOS DO WINMAC");
         Group(y, [&] {
             RowInfo(L"Trocar de janela", L"Alt + Tab");
@@ -1071,22 +1142,53 @@ protected:
             y += h + 12 * s;
         }
         y += 6 * s;
-        Group(y, [&] {
-            RowInfo(L"Espaço usado pelo WinMac", sysx::Bytes(winmacSize_));
-            if (RowButton(L"Limpar arquivos temporários", L"Apaga o que os apps deixaram na pasta temporária há mais de um dia", cleaning_ ? L"Limpando…" : L"Limpar", false, !cleaning_)) {
+        Caption(y, L"LIMPEZA DO SISTEMA");
+        if (cleanScanning_ && clean_.empty()) {
+            Spinner(L_ + 12 * s, y + 10 * s, 7 * s, th.sub);
+            Label(L"Procurando o que dá para limpar…", 12.5f, D2D1::RectF(L_ + 28 * s, y, R_, y + 20 * s), th.sub);
+            y += 34 * s;
+        } else if (clean_.empty()) {
+            Group(y, [&] { RowInfo(L"Tudo limpo", L"Nada para limpar agora ✨"); });
+        } else {
+            Group(y, [&] {
+                for (auto& it : clean_) {
+                    float t;
+                    if (!RowCustom(52 * s, &t)) continue;
+                    bool on = cleanSel_.count(it.id) != 0;
+                    D2D1_RECT_F box = D2D1::RectF(L_ + 14 * s, t + 16 * s, L_ + 34 * s, t + 36 * s);
+                    if (Clicked(Id(), D2D1::RectF(L_ + 4 * s, t, R_ - 4 * s, t + 52 * s))) { if (on) cleanSel_.erase(it.id); else cleanSel_.insert(it.id); on = !on; }
+                    gfx::Fill(c, gfx::RR(box.left, box.top, box.right, box.bottom, 5 * s), on ? th.accent : th.field);
+                    gfx::Stroke(c, gfx::RR(box.left, box.top, box.right, box.bottom, 5 * s), on ? th.accent : th.faint, 1.f);
+                    if (on) gfx::Glyph(c, L"ç3E", 12 * s, box, gfx::White(1));
+                    Label(it.name, 13, D2D1::RectF(L_ + 44 * s, t + 8 * s, R_ - 110 * s, t + 28 * s), th.text);
+                    Label(it.detail, 11.5f, D2D1::RectF(L_ + 44 * s, t + 27 * s, R_ - 110 * s, t + 46 * s), th.sub);
+                    Label(sysx::Bytes(it.bytes), 13, D2D1::RectF(R_ - 110 * s, t, R_ - 14 * s, t + 52 * s), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_TRAILING);
+                }
+            });
+            uint64_t selBytes = 0;
+            std::vector<std::wstring> ids;
+            for (auto& it : clean_) if (cleanSel_.count(it.id)) { selBytes += it.bytes; ids.push_back(it.id); }
+            Label(L"Selecionado: " + sysx::Bytes(selBytes), 13, D2D1::RectF(L_ + 6 * s, y - 6 * s, R_ - 190 * s, y + 22 * s), th.text, DWRITE_FONT_WEIGHT_MEDIUM);
+            if (Button(Id(), D2D1::RectF(R_ - 176 * s, y - 8 * s, R_, y + 22 * s), cleaning_ ? L"Limpando…" : L"Limpar selecionados", true, !cleaning_ && !ids.empty())) {
                 cleaning_ = true;
                 auto freed = std::make_shared<uint64_t>(0);
-                Async([freed]() { *freed = sysx::CleanTemp(); }, [this, freed]() {
+                HWND hw = Hwnd();
+                Async([freed, ids, hw]() { *freed = cleaner::Clean(ids, hw); }, [this, freed]() {
                     cleaning_ = false;
                     storageMsg_ = L"Pronto! " + sysx::Bytes(*freed) + L" liberados.";
                     drives_ = sysx::Drives();
+                    clean_.clear();
+                    ScanClean();
+                    NotifyShell(RL_WIDGETS);
                     Invalidate();
                 });
             }
-            if (RowButton(L"Esvaziar a Lixeira", L"", L"Esvaziar…")) {
-                SHEmptyRecycleBinW(Hwnd(), nullptr, 0);
-                drives_ = sysx::Drives();
-            }
+            y += 40 * s;
+        }
+        if (!storageMsg_.empty()) Note(y, storageMsg_);
+        Group(y, [&] {
+            RowInfo(L"Espaço usado pelo WinMac", sysx::Bytes(winmacSize_));
+            if (RowButton(L"Procurar de novo", L"Atualiza a lista do que dá para limpar", cleanScanning_ ? L"Procurando…" : L"Procurar", false, !cleanScanning_)) { clean_.clear(); ScanClean(); }
             if (macdeskSize_ && RowButton(L"Apagar sobras do MacDesk antigo", sysx::Bytes(macdeskSize_) + L" que não são mais usados", L"Apagar")) {
                 std::wstring d = MacDeskDir() + std::wstring(1, L'\0') + std::wstring(1, L'\0');
                 SHFILEOPSTRUCTW op{};
@@ -1098,7 +1200,136 @@ protected:
                 storageMsg_ = L"Sobras do MacDesk enviadas para a Lixeira.";
             }
         });
-        if (!storageMsg_.empty()) Note(y, storageMsg_);
+    }
+
+    void PageRede(float& y) {
+        Group(y, [&] {
+            if (adapters_.empty()) { RowInfo(L"Rede", L"Nenhuma placa de rede encontrada"); return; }
+            for (auto& a : adapters_) {
+                std::wstring sp = a.speed >= 1000000000ull ? std::to_wstring(a.speed / 1000000000ull) + L" Gbps" : std::to_wstring(a.speed / 1000000ull) + L" Mbps";
+                std::wstring st = a.up ? L"Conectado" + (a.ip.empty() ? L"" : L" · IP " + a.ip) + L" · " + sp : L"Desconectado";
+                float h = 56 * s, t;
+                if (!RowCustom(h, &t)) continue;
+                gfx::Circle(c, L_ + 22 * s, t + h / 2, 5 * s, a.up ? gfx::Rgba(52, 199, 89) : th.faint);
+                Label(a.kind + L" — " + a.name, 13, D2D1::RectF(L_ + 36 * s, t + 8 * s, R_ - 14 * s, t + 28 * s), th.text);
+                Label(st, 11.5f, D2D1::RectF(L_ + 36 * s, t + 28 * s, R_ - 14 * s, t + 48 * s), th.sub);
+            }
+        });
+        Group(y, [&] {
+            bool wifiOff = !wifi::RadioOn(), btOff = bt_ == 0;
+            bool plane = wifiOff && (bt_ < 0 || btOff);
+            if (RowToggle(L"Modo avião", L"Desliga Wi-Fi e Bluetooth de uma vez", plane)) {
+                bool on = !plane;
+                Async([on]() {
+                    sysx::SetRadioState(sysx::Radio::Wifi, on);
+                    sysx::SetRadioState(sysx::Radio::Bluetooth, on);
+                }, [this]() { adapters_ = sysx::Adapters(); ReadRadio(); Invalidate(); });
+            }
+            if (RowButton(L"Wi-Fi", L"Escolher rede e digitar senha", L"Abrir")) Go(PWifi);
+        });
+        if (LinkButton(Id(), D2D1::RectF(L_ + 4 * s, y - 6 * s, R_, y + 18 * s), L"VPN, proxy e opções avançadas do Windows…")) OpenPath(L"ms-settings:network-status");
+        y += 26 * s;
+    }
+
+    void PageData(float& y) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        wchar_t d[80] = {}, t[32] = {};
+        GetDateFormatEx(L"pt-BR", 0, &st, L"dddd, d 'de' MMMM 'de' yyyy", d, 80, nullptr);
+        GetTimeFormatEx(L"pt-BR", 0, &st, sysx::Clock24h() ? L"HH:mm" : L"h:mm tt", t, 32);
+        std::wstring ds = d;
+        if (!ds.empty()) ds[0] = towupper(ds[0]);
+        float h = 96 * s;
+        auto rr = gfx::RR(L_, y, R_, y + h, 12 * s);
+        gfx::Fill(c, rr, th.group);
+        gfx::Stroke(c, rr, th.groupStroke, 1.f);
+        Label(t, 34, D2D1::RectF(L_ + 18 * s, y + 8 * s, R_, y + 56 * s), th.text, DWRITE_FONT_WEIGHT_LIGHT);
+        Label(ds, 13, D2D1::RectF(L_ + 18 * s, y + 58 * s, R_, y + 82 * s), th.sub);
+        y += h + 18 * s;
+        Group(y, [&] {
+            bool h24 = sysx::Clock24h();
+            if (RowToggle(L"Relógio de 24 horas", L"14:30 em vez de 2:30 PM", h24)) sysx::SetClock24h(h24);
+            RowInfo(L"Fuso horário", sysx::TimeZoneName());
+            int clk = cfg::Int(L"MenuBar", L"ClockDate", 1) ? 0 : 1;
+            if (RowSegment(L"Na barra de menus", { L"Dia e hora", L"Só a hora" }, clk)) { cfg::SetInt(L"MenuBar", L"ClockDate", clk == 0); Notify(RL_MENUBAR, true); }
+        });
+        if (LinkButton(Id(), D2D1::RectF(L_ + 4 * s, y - 6 * s, R_, y + 18 * s), L"Mudar fuso horário ou acertar o relógio no Windows…")) OpenPath(L"ms-settings:dateandtime");
+        y += 26 * s;
+    }
+
+    void PagePrint(float& y) {
+        Group(y, [&] {
+            if (printers_.empty()) { RowInfo(L"Impressoras", L"Nenhuma impressora instalada"); return; }
+            for (auto& pr : printers_) {
+                float t;
+                if (!RowCustom(42 * s, &t)) continue;
+                if (Row(Id(), D2D1::RectF(L_ + 4 * s, t + 2 * s, R_ - 4 * s, t + 40 * s)) && !pr.isDefault) {
+                    sysx::SetDefaultPrinterName(pr.name);
+                    printers_ = sysx::Printers();
+                }
+                gfx::Glyph(c, L"\xE749", 14 * s, D2D1::RectF(L_ + 12 * s, t, L_ + 36 * s, t + 42 * s), th.sub);
+                Label(pr.name, 13, D2D1::RectF(L_ + 42 * s, t, R_ - 110 * s, t + 42 * s), th.text, pr.isDefault ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_REGULAR);
+                if (pr.isDefault) Label(L"Padrão", 12, D2D1::RectF(R_ - 110 * s, t, R_ - 14 * s, t + 42 * s), th.accent, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            }
+        });
+        Note(y, L"Clique numa impressora para ela virar a padrão.");
+        Group(y, [&] { if (RowButton(L"Adicionar impressora ou scanner", L"", L"Adicionar…")) OpenPath(L"ms-settings:printers"); });
+    }
+
+    void PagePriv(float& y) {
+        Caption(y, L"QUEM PODE USAR");
+        Group(y, [&] {
+            struct C { const wchar_t* cap; const wchar_t* label; const wchar_t* sub; };
+            for (auto& o : { C{ L"webcam", L"Câmera", L"Apps podem usar a câmera" }, C{ L"microphone", L"Microfone", L"Apps podem ouvir o microfone" },
+                             C{ L"location", L"Localização", L"Apps podem saber onde você está" } }) {
+                bool v = sysx::ConsentAllowed(o.cap);
+                if (RowToggle(o.label, o.sub, v)) sysx::SetConsent(o.cap, v);
+            }
+        });
+        Caption(y, L"PROPAGANDA");
+        Group(y, [&] {
+            const wchar_t* ad = L"Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo";
+            bool id = sysx::GetDword(HKEY_CURRENT_USER, ad, L"Enabled", 1) != 0;
+            if (RowToggle(L"ID de publicidade", L"Desligue para anúncios não seguirem você entre os apps", id)) sysx::SetDword(HKEY_CURRENT_USER, ad, L"Enabled", id);
+            const wchar_t* cdm = L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager";
+            bool sug = sysx::GetDword(HKEY_CURRENT_USER, cdm, L"SubscribedContent-338388Enabled", 1) != 0;
+            if (RowToggle(L"Apps sugeridos no menu Iniciar", L"", sug)) sysx::SetDword(HKEY_CURRENT_USER, cdm, L"SubscribedContent-338388Enabled", sug);
+        });
+    }
+
+    void PageSeg(float& y) {
+        Group(y, [&] {
+            if (!avLoaded_ || (av_.empty() && avLoaded_ && false)) { RowInfo(L"Antivírus", L"Verificando…"); return; }
+            if (av_.empty()) { RowInfo(L"Antivírus", L"Verificando…"); return; }
+            for (auto& a : av_) {
+                float h = 56 * s, t;
+                if (!RowCustom(h, &t)) continue;
+                bool ok = a.enabled && a.upToDate;
+                gfx::Glyph(c, ok ? L"\xE83D" : L"\xE7BA", 18 * s, D2D1::RectF(L_ + 10 * s, t, L_ + 40 * s, t + h), ok ? gfx::Rgba(52, 199, 89) : gfx::Rgba(255, 159, 10));
+                Label(a.name, 13, D2D1::RectF(L_ + 46 * s, t + 8 * s, R_ - 14 * s, t + 28 * s), th.text, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+                Label(!a.enabled ? L"Desligado" : a.upToDate ? L"Ligado e atualizado — tudo protegido" : L"Ligado, mas precisa atualizar", 11.5f,
+                      D2D1::RectF(L_ + 46 * s, t + 28 * s, R_ - 14 * s, t + 48 * s), th.sub);
+            }
+        });
+        Group(y, [&] {
+            if (RowButton(L"Segurança do Windows", L"Verificação de vírus, firewall e proteção contra ransomware", L"Abrir")) OpenPath(L"windowsdefender:");
+            if (RowButton(L"Windows Update", L"Atualizações de segurança do Windows", L"Abrir")) OpenPath(L"ms-settings:windowsupdate");
+        });
+    }
+
+    void PageStartup(float& y) {
+        Note(y, L"Apps que abrem sozinhos quando você liga o computador. Desligar deixa o computador iniciar mais rápido.");
+        Group(y, [&] {
+            if (startup_.empty()) { RowInfo(L"Apps ao iniciar", L"Nenhum app do seu usuário abre sozinho"); return; }
+            for (auto& a : startup_) {
+                std::wstring cmd = a.command;
+                if (cmd.size() > 70) cmd = cmd.substr(0, 67) + L"…";
+                bool v = a.enabled;
+                if (RowToggle(a.name, cmd, v)) { sysx::SetStartupEnabled(a.name, v); a.enabled = v; }
+            }
+        });
+        if (LinkButton(Id(), D2D1::RectF(L_ + 4 * s, y - 6 * s, R_, y + 18 * s), L"Ver todos no Gerenciador de Tarefas…")) ShellExecuteW(nullptr, L"open", L"taskmgr.exe", L"/7 /startup", nullptr, SW_SHOWNORMAL);
+        y += 26 * s;
     }
 
     void PageSobre(float& y, D2D1_RECT_F view) {

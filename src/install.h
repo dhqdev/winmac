@@ -13,7 +13,7 @@ struct Options {
     int accent = 0;
     int wallpaper = 0;           // papel de parede gerado (art::Wallpapers)
     bool useWallpaper = true;
-    bool traffic = true;         // botões semáforo nas janelas
+    bool traffic = false;        // botões semáforo nas janelas (padrão: os do próprio Windows)
     bool switcher = true;        // Alt+Tab do WinMac
     bool autohide = false;       // Dock se esconde
     bool widgets = true;
@@ -33,6 +33,7 @@ void Migrate();                              // ajustes de config entre versões
 void ApplyCursors(bool mac);
 bool ApplyWallpaper(int preset);
 bool ApplyWallpaperFile(const std::wstring& path);
+bool ApplyPhotoOfDay(bool force);   // foto do dia do Bing (como o Destaque do Windows); bloqueia: rode numa thread
 void SetAutostart(bool on);
 bool Autostart();
 void ApplyTheme(int theme);                  // 0 claro, 1 escuro, 2 automático (pelo horário)

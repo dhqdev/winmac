@@ -55,4 +55,39 @@ std::wstring Bytes(uint64_t b);
 
 // ---- tela ----
 std::wstring Resolution();     // ex.: 1920 × 1080 · 125%
+
+// ---- teclado e idioma ----
+int KeyboardDelay();           // 0 (curto) .. 3 (longo)
+void SetKeyboardDelay(int v);
+int KeyboardSpeed();           // 0 .. 31
+void SetKeyboardSpeed(int v);
+std::vector<std::wstring> KeyboardLayouts();
+std::wstring UiLanguage();
+
+// ---- data e hora ----
+std::wstring TimeZoneName();
+bool Clock24h();
+void SetClock24h(bool on);
+
+// ---- privacidade (câmera, microfone, localização) ----
+bool ConsentAllowed(const wchar_t* capability);   // "webcam", "microphone", "location"
+void SetConsent(const wchar_t* capability, bool allow);
+
+// ---- apps ao iniciar ----
+struct StartupApp { std::wstring name, command; bool enabled = true; };
+std::vector<StartupApp> StartupApps();
+void SetStartupEnabled(const std::wstring& name, bool on);
+
+// ---- impressoras ----
+struct Printer { std::wstring name; bool isDefault = false; };
+std::vector<Printer> Printers();
+bool SetDefaultPrinterName(const std::wstring& name);
+
+// ---- segurança ----
+struct Antivirus { std::wstring name; bool enabled = false, upToDate = false; };
+std::vector<Antivirus> AntivirusProducts();   // bloqueia (WMI): use numa thread
+
+// ---- rede ----
+struct Adapter { std::wstring name, kind, ip; uint64_t speed = 0; bool up = false; };
+std::vector<Adapter> Adapters();
 }

@@ -5,6 +5,12 @@
 #include <mmreg.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <wbemidl.h>
+#include <winspool.h>
+#include <winsock2.h>
+#include <ws2ipdef.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
 
 namespace sysx {
 namespace {
@@ -145,6 +151,10 @@ void RestoreAll() {
         SystemParametersInfoW(SPI_SETWHEELSCROLLLINES, cfg::Int(L"SpiBackup", L"WheelLines", 3), nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
     if (!cfg::Str(L"SpiBackup", L"Swap", L"").empty())
         SystemParametersInfoW(SPI_SETMOUSEBUTTONSWAP, cfg::Int(L"SpiBackup", L"Swap", 0), nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+    if (!cfg::Str(L"SpiBackup", L"KbDelay", L"").empty())
+        SystemParametersInfoW(SPI_SETKEYBOARDDELAY, cfg::Int(L"SpiBackup", L"KbDelay", 1), nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+    if (!cfg::Str(L"SpiBackup", L"KbSpeed", L"").empty())
+        SystemParametersInfoW(SPI_SETKEYBOARDSPEED, cfg::Int(L"SpiBackup", L"KbSpeed", 31), nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
     if (!cfg::Str(L"SpiBackup", L"DoubleClick", L"").empty())
         SystemParametersInfoW(SPI_SETDOUBLECLICKTIME, cfg::Int(L"SpiBackup", L"DoubleClick", 500), nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
     // energia
@@ -363,6 +373,204 @@ std::wstring Bytes(uint64_t b) {
     std::wstring s = buf;
     for (auto& ch : s) if (ch == L'.') ch = L',';
     return s;
+}
+
+// ---------------- teclado e idioma ----------------
+int KeyboardDelay() { int v = 1; SystemParametersInfoW(SPI_GETKEYBOARDDELAY, 0, &v, 0); return v; }
+void SetKeyboardDelay(int v) {
+    RememberSpi(L"KbDelay", KeyboardDelay());
+    SystemParametersInfoW(SPI_SETKEYBOARDDELAY, std::clamp(v, 0, 3), nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+}
+int KeyboardSpeed() { DWORD v = 31; SystemParametersInfoW(SPI_GETKEYBOARDSPEED, 0, &v, 0); return (int)v; }
+void SetKeyboardSpeed(int v) {
+    RememberSpi(L"KbSpeed", KeyboardSpeed());
+    SystemParametersInfoW(SPI_SETKEYBOARDSPEED, std::clamp(v, 0, 31), nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+}
+std::vector<std::wstring> KeyboardLayouts() {
+    std::vector<std::wstring> out;
+    HKL list[32];
+    int n = GetKeyboardLayoutList(32, list);
+    for (int i = 0; i < n; ++i) {
+        LANGID lang = LOWORD((UINT_PTR)list[i]);
+        wchar_t name[128] = {};
+        LCIDToLocaleName(MAKELCID(lang, SORT_DEFAULT), name, 128, 0);
+        wchar_t disp[256] = {};
+        GetLocaleInfoEx(name, LOCALE_SLOCALIZEDDISPLAYNAME, disp, 256);
+        std::wstring s = disp[0] ? disp : name;
+        if (std::find(out.begin(), out.end(), s) == out.end()) out.push_back(s);
+    }
+    return out;
+}
+std::wstring UiLanguage() {
+    wchar_t name[LOCALE_NAME_MAX_LENGTH] = {}, disp[256] = {};
+    LCIDToLocaleName(MAKELCID(GetUserDefaultUILanguage(), SORT_DEFAULT), name, LOCALE_NAME_MAX_LENGTH, 0);
+    GetLocaleInfoEx(name, LOCALE_SLOCALIZEDDISPLAYNAME, disp, 256);
+    return disp[0] ? disp : name;
+}
+
+// ---------------- data e hora ----------------
+std::wstring TimeZoneName() {
+    DYNAMIC_TIME_ZONE_INFORMATION tz{};
+    GetDynamicTimeZoneInformation(&tz);
+    std::wstring n = tz.StandardName;
+    LONG bias = -tz.Bias;
+    wchar_t b[32];
+    swprintf_s(b, L" (UTC%+d:%02d)", bias / 60, std::abs(bias % 60));
+    return n + b;
+}
+bool Clock24h() {
+    wchar_t buf[64] = {};
+    GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_SSHORTTIME, buf, 64);
+    return wcschr(buf, L'H') != nullptr;
+}
+void SetClock24h(bool on) {
+    const wchar_t* k = L"Control Panel\\International";
+    SetString(HKEY_CURRENT_USER, k, L"sShortTime", on ? L"HH:mm" : L"h:mm tt");
+    SetString(HKEY_CURRENT_USER, k, L"sTimeFormat", on ? L"HH:mm:ss" : L"h:mm:ss tt");
+    DWORD_PTR r;
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"intl", SMTO_ABORTIFHUNG, 300, &r);
+}
+
+// ---------------- privacidade ----------------
+static std::wstring ConsentKey(const wchar_t* cap) {
+    return std::wstring(L"Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\") + cap;
+}
+bool ConsentAllowed(const wchar_t* cap) {
+    wchar_t buf[32] = {};
+    DWORD sz = sizeof(buf);
+    if (RegGetValueW(HKEY_CURRENT_USER, ConsentKey(cap).c_str(), L"Value", RRF_RT_REG_SZ, nullptr, buf, &sz) != ERROR_SUCCESS) return true;
+    return _wcsicmp(buf, L"Deny") != 0;
+}
+void SetConsent(const wchar_t* cap, bool allow) { SetString(HKEY_CURRENT_USER, ConsentKey(cap).c_str(), L"Value", allow ? L"Allow" : L"Deny"); }
+
+// ---------------- apps ao iniciar ----------------
+static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+static const wchar_t* kApprovedKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
+std::vector<StartupApp> StartupApps() {
+    std::vector<StartupApp> out;
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_READ, &k) != ERROR_SUCCESS) return out;
+    for (DWORD i = 0;; ++i) {
+        wchar_t name[256];
+        DWORD nl = 256, type = 0, dl = 0;
+        if (RegEnumValueW(k, i, name, &nl, nullptr, &type, nullptr, &dl) != ERROR_SUCCESS) break;
+        std::wstring data(dl / sizeof(wchar_t) + 1, L'\0');
+        nl = 256;
+        DWORD dl2 = (DWORD)(data.size() * sizeof(wchar_t));
+        RegEnumValueW(k, i, name, &nl, nullptr, &type, (BYTE*)data.data(), &dl2);
+        data.resize(wcslen(data.c_str()));
+        StartupApp a{ name, data, true };
+        BYTE st[12] = {};
+        DWORD sl = sizeof(st);
+        if (RegGetValueW(HKEY_CURRENT_USER, kApprovedKey, name, RRF_RT_REG_BINARY, nullptr, st, &sl) == ERROR_SUCCESS && sl >= 1) a.enabled = (st[0] & 1) == 0;
+        if (_wcsicmp(name, L"WinMac") != 0) out.push_back(a);
+    }
+    RegCloseKey(k);
+    return out;
+}
+void SetStartupEnabled(const std::wstring& name, bool on) {
+    BYTE st[12] = {};
+    st[0] = on ? 2 : 3;
+    if (!on) {
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        memcpy(st + 4, &ft, sizeof(ft));
+    }
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kApprovedKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) == ERROR_SUCCESS) {
+        RegSetValueExW(k, name.c_str(), 0, REG_BINARY, st, sizeof(st));
+        RegCloseKey(k);
+    }
+}
+
+// ---------------- impressoras ----------------
+std::vector<Printer> Printers() {
+    std::vector<Printer> out;
+    wchar_t def[512] = {};
+    DWORD dl = 512;
+    GetDefaultPrinterW(def, &dl);
+    DWORD need = 0, n = 0;
+    EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, nullptr, 4, nullptr, 0, &need, &n);
+    if (!need) return out;
+    std::vector<BYTE> buf(need);
+    if (!EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, nullptr, 4, buf.data(), need, &need, &n)) return out;
+    auto* p = (PRINTER_INFO_4W*)buf.data();
+    for (DWORD i = 0; i < n; ++i) out.push_back(Printer{ p[i].pPrinterName, _wcsicmp(p[i].pPrinterName, def) == 0 });
+    return out;
+}
+bool SetDefaultPrinterName(const std::wstring& name) { return SetDefaultPrinterW(name.c_str()) != FALSE; }
+
+// ---------------- segurança ----------------
+std::vector<Antivirus> AntivirusProducts() {
+    std::vector<Antivirus> out;
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    {
+        ComPtr<IWbemLocator> loc;
+        ComPtr<IWbemServices> svc;
+        if (SUCCEEDED(CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&loc)))) {
+            BSTR ns = SysAllocString(L"ROOT\\SecurityCenter2");
+            if (SUCCEEDED(loc->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &svc))) {
+                CoSetProxyBlanket(svc.Get(), RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
+                BSTR lang = SysAllocString(L"WQL"), q = SysAllocString(L"SELECT displayName, productState FROM AntiVirusProduct");
+                ComPtr<IEnumWbemClassObject> en;
+                if (SUCCEEDED(svc->ExecQuery(lang, q, WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &en))) {
+                    for (;;) {
+                        ComPtr<IWbemClassObject> o;
+                        ULONG got = 0;
+                        if (en->Next(3000, 1, &o, &got) != WBEM_S_NO_ERROR || !got) break;
+                        VARIANT n, st;
+                        VariantInit(&n);
+                        VariantInit(&st);
+                        Antivirus a;
+                        if (SUCCEEDED(o->Get(L"displayName", 0, &n, nullptr, nullptr)) && n.vt == VT_BSTR) a.name = n.bstrVal;
+                        if (SUCCEEDED(o->Get(L"productState", 0, &st, nullptr, nullptr))) {
+                            DWORD v = st.vt == VT_I4 ? (DWORD)st.lVal : st.vt == VT_UI4 ? st.ulVal : 0;
+                            a.enabled = ((v >> 12) & 0xF) == 1;
+                            a.upToDate = ((v >> 4) & 0xF) == 0;
+                        }
+                        VariantClear(&n);
+                        VariantClear(&st);
+                        out.push_back(a);
+                    }
+                }
+                SysFreeString(lang);
+                SysFreeString(q);
+            }
+            SysFreeString(ns);
+        }
+    }
+    CoUninitialize();
+    return out;
+}
+
+// ---------------- rede ----------------
+std::vector<Adapter> Adapters() {
+    std::vector<Adapter> out;
+    ULONG sz = 0;
+    GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_DNS_SERVER, nullptr, nullptr, &sz);
+    if (!sz) return out;
+    std::vector<BYTE> buf(sz);
+    auto* a = (PIP_ADAPTER_ADDRESSES)buf.data();
+    if (GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_DNS_SERVER, nullptr, a, &sz) != NO_ERROR) return out;
+    for (; a; a = a->Next) {
+        if (a->IfType != IF_TYPE_IEEE80211 && a->IfType != IF_TYPE_ETHERNET_CSMACD) continue;
+        if (wcsstr(a->Description, L"Virtual") || wcsstr(a->Description, L"Hyper-V") || wcsstr(a->Description, L"VMware") || wcsstr(a->Description, L"Bluetooth")) continue;
+        Adapter d;
+        d.name = a->FriendlyName;
+        d.kind = a->IfType == IF_TYPE_IEEE80211 ? L"Wi-Fi" : L"Cabo de rede";
+        d.up = a->OperStatus == IfOperStatusUp && a->FirstGatewayAddress;
+        d.speed = a->TransmitLinkSpeed;
+        for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+            if (u->Address.lpSockaddr->sa_family != AF_INET) continue;
+            wchar_t ip[64] = {};
+            DWORD il = 64;
+            WSAAddressToStringW(u->Address.lpSockaddr, u->Address.iSockaddrLength, nullptr, ip, &il);
+            d.ip = ip;
+            break;
+        }
+        out.push_back(d);
+    }
+    return out;
 }
 
 std::wstring Resolution() {

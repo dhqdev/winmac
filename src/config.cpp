@@ -24,7 +24,7 @@ static const wchar_t* kDefault =
     L"Glass=100\r\n"
     L"ReduceTransparency=0\r\n"
     L"[Windows]\r\n"
-    L"TrafficLights=1\r\n"
+    L"TrafficLights=0\r\n"
     L"Switcher=1\r\n"
     L"SwitcherPreviews=1\r\n"
     L"[Effects]\r\n"

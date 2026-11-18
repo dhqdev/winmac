@@ -16,6 +16,7 @@
 #include "traffic.h"
 #include "version.h"
 #include "wifiui.h"
+#include "net.h"
 #include <ctime>
 
 HINSTANCE g_inst = nullptr;
@@ -28,7 +29,7 @@ bool g_tbHidden = false;
 std::set<HWND> g_appbars;
 HWND g_corners[2] = {};
 bool g_fullscreen = false;
-enum { T_RELAYOUT = 1, T_WALLPAPER = 2, T_UPDATE = 3, T_THEME = 4, T_WELCOMEBACK = 5 };
+enum { T_RELAYOUT = 1, T_WALLPAPER = 2, T_UPDATE = 3, T_THEME = 4, T_WELCOMEBACK = 5, T_PHOTO = 6 };
 
 // ---------------- barra de tarefas do Windows ----------------
 HWND Tray() { return FindWindowW(L"Shell_TrayWnd", nullptr); }
@@ -313,6 +314,10 @@ LRESULT CALLBACK CtrlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == T_UPDATE) {
             SetTimer(h, T_UPDATE, 6 * 3600 * 1000, nullptr);
             if (cfg::Int(L"Update", L"Auto", 1)) update::CheckAsync(h);
+        } else if (w == T_PHOTO) {
+            // foto do dia (como o Destaque do Windows): troca sozinha quando sai a foto nova
+            SetTimer(h, T_PHOTO, 3 * 3600 * 1000, nullptr);
+            if (cfg::Int(L"Screen", L"WallpaperPreset", 0) == -2) std::thread([]() { install::ApplyPhotoOfDay(false); }).detach();
         } else if (w == T_THEME) {
             if (cfg::Int(L"Appearance", L"Theme", 1) == 2) install::ApplyTheme(2);
         } else if (w == T_WELCOMEBACK) {
@@ -382,6 +387,7 @@ int RunShell(const std::wstring& args) {
     SetTimer(g_ctrl, T_UPDATE, 90 * 1000, nullptr);
     SetTimer(g_ctrl, T_THEME, 10 * 60 * 1000, nullptr);
     SetTimer(g_ctrl, T_WELCOMEBACK, 4000, nullptr);
+    SetTimer(g_ctrl, T_PHOTO, 20 * 1000, nullptr);
     HideTaskbar();
     if (cfg::Int(L"MenuBar", L"Enabled", 1)) g_menubar.Create();
     g_dock.Create();
@@ -435,6 +441,7 @@ void RenderShots(const std::wstring& dir) {
     for (int i = 0; i < 6; ++i) welcome::RenderPreview(i, dir + L"\\welcome_" + std::to_wstring(i) + L".png");
     switcher::RenderPreview(dir + L"\\alttab.png");
     traffic::RenderPreview(dir + L"\\traffic.png");
+    g_widgets.Preview(dir);
 }
 }  // namespace
 
@@ -585,6 +592,17 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR cmd, int) {
         art::ExportArt(ArgAfter(args, L"--export-art"));
     } else if (args.find(L"--shots") != std::wstring::npos) {
         RenderShots(ArgAfter(args, L"--shots"));
+    } else if (args.find(L"--diag-net") != std::wstring::npos) {
+        int st = 0;
+        std::string body = net::Get(L"https://api.open-meteo.com/v1/forecast?latitude=-22.4365&longitude=-46.8169&current=temperature_2m,weather_code,is_day&timezone=auto", &st);
+        net::JVal j;
+        bool ok = net::ParseJson(body, j);
+        const net::JVal* cur = ok ? j.Get("current") : nullptr;
+        FILE* f = nullptr;
+        if (!_wfopen_s(&f, ArgAfter(args, L"--diag-net").c_str(), L"w") && f) {
+            fprintf(f, "status=%d len=%zu parse=%d current=%d temp=%.1f\n%.200s\n", st, body.size(), ok, cur != nullptr, cur && cur->Get("temperature_2m") ? cur->Get("temperature_2m")->Number() : -999.0, body.c_str());
+            fclose(f);
+        }
     } else if (args.find(L"--diag-traffic") != std::wstring::npos) {
         traffic::Diagnose(ArgAfter(args, L"--diag-traffic"));
     } else if (args.find(L"--test-overlays") != std::wstring::npos) {

@@ -26,15 +26,16 @@ O Pingo é uma gotinha de **vidro líquido** que te recebe na instalação, acen
 | | |
 |---|---|
 | 🧊 **Vidro líquido** | Dock, barra de menus, menus, Central de Controle e janelas com desfoque real do Windows, brilho especular, borda com leve dispersão de cor e reflexo. Dá para regular o brilho ou reduzir a transparência. |
-| 🚥 **Botões estilo Mac** | Fechar, minimizar e ampliar em vermelho, amarelo e verde nas janelas dos apps, inclusive Chrome, Edge e Office (cinza quando a janela não está em foco, com ×, − e + ao passar o mouse). |
+| 🚥 **Botões estilo Mac (opcional)** | Fechar, minimizar e ampliar em vermelho, amarelo e verde nas janelas dos apps, inclusive Chrome, Edge e Office. Vem desligado: liga em Ajustes › Janelas. |
 | 🔀 **Alt+Tab de vidro** | Painel com **prévias ao vivo** das janelas. Tab avança, Shift+Tab volta, Q/W fecha a janela selecionada e Esc cancela. Também tem o modo só com ícones, como no Mac. |
 | ⚙️ **Ajustes do Sistema** | App próprio no estilo do macOS, sem precisar das Configurações do Windows: Wi‑Fi, Bluetooth, aparência, papel de parede (inclusive o Destaque do Windows), Dock, barra de menus, janelas, notificações, som (escolha da saída), tela, bateria e energia, mouse, armazenamento, Explorador, limpeza de apps e atualização. |
 | 📶 **Wi‑Fi de verdade** | Lista de redes, conexão com senha e liga/desliga direto pela barra de menus, pelos Ajustes e na instalação. |
 | 🔄 **Atualização pelo GitHub** | Quando sai versão nova aparece um aviso. Em **Ajustes › Atualização de Software › Atualizar agora**, o WinMac baixa, confere o SHA‑256 e se reinstala sozinho. |
 | 🧹 **Sem apps pagos** | Remove apps de assinatura e propaganda (Xbox, Clipchamp, Candy Crush, Disney+…). **Word, Excel e PowerPoint continuam.** |
-| 🖼️ **Papéis de parede próprios** | Seis papéis de parede gerados pelo app no tamanho exato da sua tela. |
+| 🖼️ **Papéis de parede** | Seis papéis de parede gerados pelo app e a **Foto do dia** (uma foto nova todo dia, como o Destaque do Windows). |
 | 🗂️ **Dock e barra de menus** | Ampliação dos ícones, apps abertos, pasta Downloads e Lixeira. Menus Arquivo/Editar/Janela que funcionam em qualquer app, bandeja, bateria e relógio. |
-| 🌤️ **Widgets** | Data, calendário, relógio e clima (escolha a cidade nos Ajustes). |
+| 🌤️ **Widgets** | Data, calendário, relógio, clima, **Sistema** (CPU, memória, disco, bateria), **Processos**, **Rede** e **Limpeza** (mostra sempre quanto dá para liberar e limpa com um clique). |
+| 🧽 **Limpeza do sistema** | Temporários, caches do Chrome/Edge, cache de gráficos, relatórios de erro, miniaturas e Lixeira — tudo listado em Ajustes › Armazenamento e Limpeza. |
 
 <table>
 <tr>
@@ -46,6 +47,10 @@ O Pingo é uma gotinha de **vidro líquido** que te recebe na instalação, acen
 <td><img src="docs/ajustes_apps.jpg" alt="Ajustes: apps e limpeza"></td>
 </tr>
 </table>
+
+### Widgets de sistema e limpeza
+
+<img src="docs/widgets.jpg" alt="Widgets Sistema, Rede, Processos e Limpeza">
 
 ### Alt+Tab
 

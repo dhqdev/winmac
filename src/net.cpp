@@ -36,8 +36,8 @@ bool Open(const std::wstring& url, const std::wstring& headers, Handles& h, int*
     DWORD flags = uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0;
     h.r = WinHttpOpenRequest(h.c, L"GET", full.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!h.r) return false;
-    DWORD dec = WINHTTP_DECOMPRESSION_FLAG_ALL;
-    WinHttpSetOption(h.r, WINHTTP_OPTION_DECOMPRESSION, &dec, sizeof(dec));
+    // sem descompressão automática: em algumas versões do Windows ela devolvia o corpo vazio
+
     if (!WinHttpSendRequest(h.r, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(), headers.empty() ? 0 : (DWORD)-1L,
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
         return false;
@@ -54,13 +54,12 @@ std::string Get(const std::wstring& url, int* status, const std::wstring& extraH
     if (status) *status = 0;
     Handles h;
     if (!Open(url, extraHeaders, h, status)) return out;
-    DWORD avail = 0;
-    while (WinHttpQueryDataAvailable(h.r, &avail) && avail) {
-        size_t at = out.size();
-        out.resize(at + avail);
+    // lê até o fim (com descompressão ligada, "dados disponíveis" pode vir 0 antes do fim)
+    std::vector<char> buf(64 * 1024);
+    for (;;) {
         DWORD rd = 0;
-        if (!WinHttpReadData(h.r, out.data() + at, avail, &rd)) { out.resize(at); break; }
-        out.resize(at + rd);
+        if (!WinHttpReadData(h.r, buf.data(), (DWORD)buf.size(), &rd) || rd == 0) break;
+        out.append(buf.data(), rd);
         if (out.size() > 8'000'000) break;
     }
     return out;
@@ -83,11 +82,9 @@ bool Download(const std::wstring& url, const std::wstring& file, const std::func
     DWORD tick = 0;
     for (;;) {
         if (cancel && *cancel) { ok = false; break; }
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(h.r, &avail)) { ok = false; break; }
-        if (!avail) break;
         DWORD rd = 0;
-        if (!WinHttpReadData(h.r, buf.data(), std::min<DWORD>(avail, (DWORD)buf.size()), &rd)) { ok = false; break; }
+        if (!WinHttpReadData(h.r, buf.data(), (DWORD)buf.size(), &rd)) { ok = false; break; }
+        if (rd == 0) break;
         DWORD wr = 0;
         if (!WriteFile(f, buf.data(), rd, &wr, nullptr) || wr != rd) { ok = false; break; }
         got += rd;
